@@ -22,8 +22,8 @@ Each service file will be stripped down to **method signatures only** with docst
 mongodb-tasks/
 ├── STRATEGY_MONGODB_TASKS.md          ← This file (meta-strategy)
 ├── TASK_00_SETUP.md                   ← Environment setup + architecture primer
-├── TASK_01_USER.md                    ← User authentication service
-├── TASK_02_SUPPLIER.md                ← Supplier authentication service
+├── TASK_01_USER.md                    ← User CRUD service
+├── TASK_02_SUPPLIER.md                ← Supplier CRUD service
 ├── TASK_04_PRODUCT.md                 ← Product catalog service
 ├── TASK_05_POST.md                    ← Social content service
 ├── TASK_07_ORDER.md                   ← Order processing service
@@ -118,11 +118,12 @@ Each task introduces NEW MongoDB concepts while reinforcing previous ones.
 **New Concepts:**
 | Concept | Method | What They Learn |
 |---------|--------|----------------|
-| `find_one` with field match | `is_email_available()` | Basic document lookup by field |
-| `insert` | `register_consumer()` | Document creation with Beanie |
-| Nested field query | `login()` | Query `{"contact_info.primary_email": email}` |
-| `$set` via `.save()` | `verify_email()` | Update specific fields |
-| Unique index awareness | `register_*()` | Handle duplicate key errors |
+| `find_one` with field match | `create_user()` | Check email uniqueness via nested field lookup |
+| `insert` | `create_user()` | Document creation with Beanie |
+| Nested field query | `get_user()` | Query by `_id` with `PydanticObjectId` |
+| `$set` via `.save()` | `update_user()` | Partial update on nested profile fields |
+| Soft delete pattern | `delete_user()` | Set `deleted_at` timestamp instead of hard delete |
+| Find with filter + sort | `list_users()` | Filter `deleted_at == None`, sort, skip/limit |
 
 **Reinforced:** None (this is the foundation)
 
@@ -132,9 +133,10 @@ Each task introduces NEW MongoDB concepts while reinforcing previous ones.
 **New Concepts:**
 | Concept | Method | What They Learn |
 |---------|--------|----------------|
-| Array field query | `is_email_available()` | Query `additional_emails` array |
-| Deeply nested documents | `register_supplier()` | Build complex nested structures |
-| Dual token strategy | `login()` | Access + refresh token pattern |
+| Deeply nested documents | `create_supplier()` | Build complex structures: `ContactInfo` → `CompanyInfo` → `CompanyAddress` → `BusinessInfo` → `BankingInfo` |
+| Array field queries | `create_supplier()` | Query `additional_emails` array for uniqueness |
+| Multi-level partial update | `update_supplier()` | Update fields across nested objects (`contact_info.primary_phone`, `company_info.legal_name`, etc.) |
+| Hard delete | `delete_supplier()` | Permanent document removal (contrast with User soft delete) |
 
 **Reinforced:** find_one, insert, save, nested fields, password hashing
 
@@ -145,12 +147,13 @@ Each task introduces NEW MongoDB concepts while reinforcing previous ones.
 | Concept | Method | What They Learn |
 |---------|--------|----------------|
 | Dict/Map field queries | Variant operations | Query inside `variants` dict |
-| Complex nested structures | `create_product()` | Variants + stock locations |
-| Price range queries | `list_public_products()` | `$gte` / `$lte` on cents fields |
-| Cross-collection validation | `publish_product()` | Check supplier exists |
-| Status state transitions | lifecycle methods | DRAFT -> ACTIVE -> DISCONTINUED |
+| Complex nested structures | `create_product()` | Variants + stock locations + topic descriptions |
+| Multi-filter queries | `list_products()` | Combine status, category, supplier_id filters |
+| Cross-collection validation | `create_product()` | Validate supplier exists before creating product |
+| Status state transitions | lifecycle methods | DRAFT → ACTIVE → DISCONTINUED / OUT_OF_STOCK |
+| Back-reference management | `create_product()` / `delete_product()` | Add/remove product_id from `supplier.product_ids` |
 
-**Reinforced:** Cursor pagination, soft delete
+**Reinforced:** find_one, insert, save, skip/limit pagination
 
 ---
 
@@ -158,14 +161,14 @@ Each task introduces NEW MongoDB concepts while reinforcing previous ones.
 **New Concepts:**
 | Concept | Method | What They Learn |
 |---------|--------|----------------|
-| Multi-sort cursor pagination | `list_posts()` | Sort by `published_at` + `_id` tiebreaker with `$or` |
-| Base64 composite cursors | `list_posts()` | Encode/decode cursor from multiple fields |
-| `$inc` atomic counters | `increment_stats()` | Atomic increment on nested stats fields |
-| `$set` + `$inc` combined | `record_comment()` | Multiple update operators in one call |
-| Nested field queries | `list_user_posts()` | Query `author.user_id` |
-| Denormalized author snapshot | `create_post()` | Store PostAuthor from User data |
+| Denormalized author snapshot | `create_post()` | Store `PostAuthor` from User data (display_name, avatar) |
+| Multi-condition filter | `list_posts()` | Filter `deleted_at == None` AND `published_at != None`, optional `author_id` |
+| Sort by published_at | `list_posts()` | Sort by `-published_at` for timeline ordering |
+| Draft/publish lifecycle | `publish_post()` | Set `published_at` to transition from draft to live |
+| Nested field queries | `list_posts()` | Query `author.user_id` when filtering by author |
+| Media attachment handling | `create_post()` / `update_post()` | Build `MediaAttachment` and `LinkPreview` embedded docs |
 
-**Reinforced:** Cursor pagination, denormalized data, soft delete
+**Reinforced:** Soft delete, partial update, denormalized data
 
 ---
 
@@ -173,13 +176,12 @@ Each task introduces NEW MongoDB concepts while reinforcing previous ones.
 **New Concepts:**
 | Concept | Method | What They Learn |
 |---------|--------|----------------|
-| Status state machine | `update_order_status()` | 8-status lifecycle with transition validation |
-| Per-item fulfillment tracking | `update_item_fulfillment()` | Track shipping per OrderItem |
-| Product snapshot denormalization | `_build_product_snapshot()` | Freeze product data at purchase time |
-| Order number generation | `_generate_order_number()` | Human-readable unique IDs |
-| Compound find_one | `_get_user_order()` | Anti-enumeration: check ownership + existence |
-| Dual lookup strategies | `get_order` / `get_order_by_number` | Find by `_id` or by `order_number` |
-| `$in` status filter | `list_user_orders()` | Filter by multiple statuses |
+| Product snapshot denormalization | `create_order()` | Freeze product data at purchase time via `ProductSnapshot` |
+| Order number generation | `create_order()` | Human-readable unique IDs (e.g., `ORD-20250209-ABC1`) |
+| Multi-collection validation | `create_order()` | Validate User exists + each Product is ACTIVE |
+| Per-item order building | `create_order()` | Build `OrderItem` list with pricing and fulfillment status |
+| Status guard on cancel | `cancel_order()` | Only allow cancel from PENDING/CONFIRMED |
+| Compound query filters | `list_orders()` | Filter by `customer.user_id` + optional status + sort |
 
 **Reinforced:** Everything from previous tasks
 
@@ -217,17 +219,17 @@ class ProductService:
     Handles CRUD, lifecycle, and catalog queries.
     """
 
+    def __init__(self):
+        self._kafka = get_kafka_producer()
+
     # ──────────────────────────────────────────────
     # HELPER METHODS
     # ──────────────────────────────────────────────
 
     @staticmethod
-    async def _get_supplier(supplier_id: str) -> Supplier:
+    def _build_topic_descriptions(items: list) -> list[TopicDescription]:
         """
-        Fetch a supplier by ID. Raise ValueError if not found.
-
-        MongoDB Concept: find_one by _id
-        Error: "Supplier not found" if None
+        Convert request topic description items to model objects.
         """
         # TODO: Implement this method
         pass
@@ -236,10 +238,10 @@ class ProductService:
     # EXERCISE 5.1: CREATE PRODUCT
     # ──────────────────────────────────────────────
 
-    @staticmethod
     async def create_product(
+        self,
         supplier_id: str,
-        data: CreateProductRequest,
+        body: CreateProductRequest,
     ) -> Product:
         """
         Create a new product for a supplier.
@@ -248,30 +250,31 @@ class ProductService:
         1. Supplier must exist
         2. Build product with all embedded types
         3. Set initial status to DRAFT
+        4. Add product_id to supplier.product_ids
 
         MongoDB Operations:
         - Find supplier by ID
         - Insert new product document
-        - Add product_id to supplier.product_ids
+        - Update supplier.product_ids array
+        - Emit PRODUCT_CREATED Kafka event
 
         Returns: The created Product document
-        Errors: ValueError with descriptive messages
+        Errors: NotFoundError if supplier not found
         """
         # TODO: Implement this method
         pass
 ```
 
 ### What STAYS in the student version:
-- Class definition
+- Class definition with `__init__` (Kafka producer initialization)
 - All method signatures with full type hints
 - Comprehensive docstrings explaining:
   - Business rules
   - MongoDB operations needed
-  - Error conditions
+  - Error conditions (using `AppError` hierarchy)
   - Return types
 - Import statements
-- Constants (JWT_SECRET, etc.)
-- Utility function signatures (hash_password, etc.)
+- Helper method signatures (e.g., `_build_topic_descriptions`, `_build_stock_locations`)
 
 ### What gets REMOVED:
 - All method bodies (replaced with `pass`)
@@ -352,8 +355,8 @@ Difficulty
 | 01 - User | 6 | Low | First time writing Beanie queries |
 | 02 - Supplier | 6 | Low-Med | Deeper nesting, stricter validation |
 | 04 - Product | 8 | Medium | Variants, inventory, lifecycle |
-| 05 - Post | 7 | Medium-High | Cursor pagination, atomic counters |
-| 07 - Order | 7 | High | State machine, fulfillment tracking |
+| 05 - Post | 7 | Medium-High | Denormalized snapshots, draft/publish, media |
+| 07 - Order | 7 | High | Multi-collection validation, snapshot denormalization |
 | 08 - Analytics | 8 | Very High | Pure aggregation pipelines |
 
 ---
@@ -364,7 +367,7 @@ Difficulty
 Don't mix concepts. If the exercise is about `$inc`, that's the focus.
 
 ### 2. Every Exercise Has Real Business Context
-Not "insert a document" but "Register a consumer who wants to buy handmade jewelry from their favorite influencer."
+Not "insert a document" but "Create a user who wants to buy handmade jewelry and engage with social content."
 
 ### 3. Three Hint Levels Per Exercise
 - **Hint 1:** Direction (e.g., "Use Beanie's find_one with a filter dict")
@@ -382,11 +385,11 @@ Each exercise lists error scenarios the student must handle (not discover on the
 ## Testing & Seed Data Strategy
 
 ### TASK_00 (Setup MD) Includes:
-1. Docker compose up (MongoDB + app)
-2. Seed script that creates:
-   - 3 Users (2 consumers, 1 leader)
-   - 2 Suppliers
-   - Test data IDs are FIXED (deterministic) so curl commands work
+1. Docker compose up (MongoDB + Kafka + MySQL + app + mysql-service)
+2. Seed scripts available in `scripts/`:
+   - `seed.py` - Creates sample users + 16 suppliers via REST API
+   - `generate_posts.py` - Generates sample social posts
+   - `generate_products.py` - Generates sample products with variants
 3. MongoDB shell access instructions
 4. How to check indexes: `db.collection.getIndexes()`
 5. How to inspect documents: `db.collection.findOne()`
@@ -402,16 +405,16 @@ Each exercise lists error scenarios the student must handle (not discover on the
 ### Phase 1: Prepare Student Codebase
 1. Create `student/` branch or directory
 2. Strip all service implementations -> method stubs with docstrings
-3. Keep models, schemas, routes intact
-4. Add seed data scripts
+3. Keep models, schemas, routes, utils intact
+4. Keep seed data scripts
 
 ### Phase 2: Create MDs (in order)
 1. `TASK_00_SETUP.md` - Environment + architecture primer
-2. `TASK_01_USER.md` - User/Auth service
-3. `TASK_02_SUPPLIER.md` - Supplier auth service
-4. `TASK_04_PRODUCT.md` - Product service
-5. `TASK_05_POST.md` - Post service
-6. `TASK_07_ORDER.md` - Order service
+2. `TASK_01_USER.md` - User CRUD service
+3. `TASK_02_SUPPLIER.md` - Supplier CRUD service
+4. `TASK_04_PRODUCT.md` - Product catalog service
+5. `TASK_05_POST.md` - Social content service
+6. `TASK_07_ORDER.md` - Order processing service
 7. `TASK_08_ANALYTICS.md` - Aggregation pipeline exercises
 8. `TASK_09_KAFKA.md` - Kafka consumer exercises (bonus)
 
@@ -427,11 +430,11 @@ A student who completes all tasks will be able to:
 
 1. **Write efficient MongoDB queries** using Beanie ODM
 2. **Design compound indexes** and understand query optimization
-3. **Implement cursor-based pagination** for production-scale datasets
+3. **Implement skip/limit and cursor-based pagination** for production-scale datasets
 4. **Handle concurrent updates** with atomic operators (`$inc`, `$set`)
 5. **Build status-based workflows** (state machines with transition validation)
-6. **Implement per-item fulfillment tracking** patterns
+6. **Implement product snapshot denormalization** for order integrity
 7. **Write aggregation pipelines** for analytics and reporting
 8. **Apply soft-delete patterns** consistently
-9. **Build denormalized read models** for performance (snapshots, author info)
+9. **Build denormalized read models** for performance (author snapshots, product snapshots)
 10. **Flatten nested documents** for event-driven consumers

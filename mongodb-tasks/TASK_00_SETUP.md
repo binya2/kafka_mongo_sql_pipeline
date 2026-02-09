@@ -49,7 +49,7 @@ Before starting, make sure you have:
 
 ```bash
 git clone <repository-url>
-cd mongo_advanced_leaerning
+cd kafka_mongo_sql_pipeline
 ```
 
 ### 3b. Start All Services
@@ -92,7 +92,7 @@ Open your browser and navigate to:
 http://localhost:8000/docs
 ```
 
-This is the **Swagger UI** - FastAPI's built-in interactive API documentation. You should see the full list of endpoints grouped by tag (Authentication, Products, Orders, etc.). If this page loads, your backend is running correctly.
+This is the **Swagger UI** - FastAPI's built-in interactive API documentation. You should see the full list of endpoints grouped by tag (Users, Suppliers, Products, Orders, Posts). If this page loads, your backend is running correctly.
 
 You can also check the health endpoint directly in Swagger:
 1. Find the **GET /** endpoint
@@ -108,7 +108,7 @@ docker compose logs app
 # Expected to see:
 # ✓ Connected to MongoDB: social_commerce
 # ✓ Initialized Beanie ODM with all models
-# ✓ Application started successfully
+# Application started successfully
 
 # Follow logs in real-time (useful during development):
 docker compose logs -f app
@@ -138,13 +138,15 @@ Swagger UI lets you:
 ┌──────────────────────────────────────────────────────────────┐
 │  Swagger UI Workflow                                          │
 │                                                               │
-│  1. Find the endpoint (e.g., POST /register)                 │
+│  1. Find the endpoint (e.g., POST /users)                    │
 │  2. Click "Try it out"                                        │
 │  3. Edit the request body JSON                                │
 │  4. Click "Execute"                                           │
 │  5. Read the response below                                   │
-│     ├── 201 = Success (check the response body)              │
-│     ├── 400 = Your service raised ValueError                 │
+│     ├── 201 = Created successfully                            │
+│     ├── 200 = Success (read / update operations)              │
+│     ├── 204 = Success (delete, no content)                    │
+│     ├── 400/409/422 = Validation or conflict error            │
 │     ├── 404 = Not found                                       │
 │     └── 500 = Unhandled exception (check docker logs)        │
 │                                                               │
@@ -155,9 +157,9 @@ Swagger UI lets you:
 
 ### Postman (For Complex Flows)
 
-For multi-step flows (register → login → use token → create order), Postman is more convenient because:
+For multi-step flows (create user → create product → create order), Postman is more convenient because:
 - You can save requests in collections
-- You can store variables (user IDs, tokens) and reuse them
+- You can store variables (user IDs, supplier IDs) and reuse them
 - You can chain requests together
 
 Import the base URL as a Postman variable: `{{base_url}} = http://localhost:8000`
@@ -169,85 +171,93 @@ Import the base URL as a Postman variable: `{{base_url}} = http://localhost:8000
 ### Directory Layout
 
 ```
-mongo_advanced_leaerning/
+kafka_mongo_sql_pipeline/
 │
 ├── docker-compose.yml              ← Orchestrates all 5 services
 │
 ├── apps/
-│   ├── backend-service/            ← FastAPI backend (where you work)
+│   ├── mongo_backend/              ← FastAPI backend (where you work)
 │   │   ├── Dockerfile
-│   │   ├── main.py                 ← Entry point (uvicorn server)
-│   │   ├── server.py               ← FastAPI app setup + route registration
+│   │   ├── main.py                 ← Entry point (uvicorn server with hot reload)
+│   │   ├── server.py               ← FastAPI app setup, exception handlers, route registration
 │   │   ├── requirements.txt        ← Python dependencies
-│   │   └── src/
-│   │       ├── db/
-│   │       │   └── mongo_db.py     ← MongoDB connection + Beanie initialization
-│   │       ├── kafka/
-│   │       │   └── producer.py     ← Kafka event producer (already works)
-│   │       ├── routes/             ← HTTP endpoints (COMPLETE - don't modify)
-│   │       │   ├── auth.py         ← /register, /login, /verify-email, ...
-│   │       │   ├── supplier_auth.py ← /supplier/register, /supplier/login, ...
-│   │       │   ├── product.py      ← /products/...
-│   │       │   ├── post.py         ← /posts/...
-│   │       │   ├── order.py        ← /orders/...
-│   │       │   └── admin.py        ← /admin/...
-│   │       ├── schemas/            ← Request/response models (COMPLETE - don't modify)
-│   │       │   ├── auth.py
-│   │       │   ├── supplier_auth.py
-│   │       │   ├── product.py
-│   │       │   ├── post.py
-│   │       │   └── order.py
-│   │       ├── services/           ← Business logic (YOU IMPLEMENT THESE)
-│   │       │   ├── auth.py         ← TASK_01
-│   │       │   ├── supplier_auth.py ← TASK_02
-│   │       │   ├── product.py      ← TASK_04
-│   │       │   ├── post.py         ← TASK_05
-│   │       │   └── order.py        ← TASK_07
-│   │       └── utils/              ← Helper functions (COMPLETE - use freely)
-│   │           ├── datetime_utils.py ← utc_now() helper
-│   │           ├── serialization.py  ← oid_to_str() for Kafka
-│   │           ├── order_utils.py
-│   │           └── post_utils.py
+│   │   ├── db/
+│   │   │   └── mongo_db.py         ← MongoDB connection + Beanie initialization
+│   │   ├── kafka/
+│   │   │   └── producer.py         ← Kafka event producer (already works)
+│   │   ├── routes/                  ← HTTP endpoints (COMPLETE - don't modify)
+│   │   │   ├── user.py             ← /users + /suppliers endpoints
+│   │   │   ├── product.py          ← /products endpoints
+│   │   │   ├── order.py            ← /orders endpoints
+│   │   │   └── post.py             ← /posts endpoints
+│   │   ├── schemas/                 ← Request/response models (COMPLETE - don't modify)
+│   │   │   ├── user.py             ← CreateUser, UpdateUser, CreateSupplier, UpdateSupplier
+│   │   │   ├── product.py          ← CreateProduct, UpdateProduct
+│   │   │   ├── order.py            ← CreateOrder, CancelOrder
+│   │   │   └── post.py             ← CreatePost, UpdatePost
+│   │   ├── services/                ← Business logic (YOU IMPLEMENT THESE)
+│   │   │   ├── user.py             ← TASK_01 (Users) + TASK_02 (Suppliers)
+│   │   │   ├── product.py          ← TASK_04
+│   │   │   ├── post.py             ← TASK_05
+│   │   │   └── order.py            ← TASK_07
+│   │   └── utils/                   ← Helper functions (COMPLETE - use freely)
+│   │       ├── datetime_utils.py    ← utc_now() helper
+│   │       ├── serialization.py     ← oid_to_str() for Kafka events
+│   │       ├── password.py          ← Password hashing utilities
+│   │       ├── user_utils.py        ← user_response() / supplier_response() formatters
+│   │       ├── product_utils.py     ← product_response() formatter
+│   │       ├── order_utils.py       ← order_response() formatter
+│   │       └── post_utils.py        ← post_response() formatter
 │   │
-│   └── mysql-service/              ← Kafka consumer → MySQL (TASK_09)
+│   └── mysql_server/                ← Kafka consumer → MySQL (TASK_09)
 │       ├── Dockerfile
-│       ├── main.py                 ← Consumer entry point
+│       ├── main.py                  ← Consumer entry point
 │       └── src/
 │           ├── db/
-│           │   └── connection.py   ← MySQL connection pool
+│           │   ├── connection.py    ← MySQL connection pool
+│           │   └── tables.py        ← DDL for 7 tables
 │           ├── kafka/
-│           │   └── consumer.py     ← Kafka consumer with handler routing
-│           ├── consumers/
-│           │   └── auth_consumer.py ← Reference consumer (User events → MySQL)
-│           └── dal/
-│               └── user_dal.py     ← Data access layer for MySQL
+│           │   └── consumer.py      ← Kafka consumer with handler routing
+│           ├── consumers/           ← Event handlers per domain
+│           │   ├── user_consumer.py
+│           │   ├── supplier_consumer.py
+│           │   ├── product_consumer.py
+│           │   ├── order_consumer.py
+│           │   └── post_consumer.py
+│           └── dal/                 ← Data access layer for MySQL
+│               ├── user_dal.py
+│               ├── supplier_dal.py
+│               ├── product_dal.py
+│               ├── order_dal.py
+│               └── post_dal.py
 │
-├── shared/                         ← Shared across all services
+├── shared/                          ← Shared across all services
 │   ├── kafka/
-│   │   ├── config.py              ← Kafka connection settings
-│   │   └── topics.py             ← 7 topics + 28 event types
-│   └── models/                    ← MongoDB document models (COMPLETE - don't modify)
-│       ├── user.py                ← User entity (Consumer/Leader)
-│       ├── auth.py                ← Email verification + password reset tokens
-│       ├── supplier.py            ← Supplier/vendor entity
-│       ├── product.py             ← Product catalog
-│       ├── post.py                ← Social content
-│       └── order.py               ← Purchase orders
+│   │   ├── config.py               ← Kafka connection settings
+│   │   └── topics.py               ← 5 topics + 20 event types
+│   ├── models/                      ← MongoDB document models (COMPLETE - don't modify)
+│   │   ├── user.py                  ← User, ContactInfo, UserProfile
+│   │   ├── supplier.py              ← Supplier, CompanyInfo, BusinessInfo, BankingInfo
+│   │   ├── product.py               ← Product, ProductVariant, StockLocation, ProductStats
+│   │   ├── order.py                 ← Order, OrderItem, ProductSnapshot, ShippingAddress
+│   │   └── post.py                  ← Post, PostAuthor, MediaAttachment, LinkPreview, PostStats
+│   └── errors.py                    ← AppError exception hierarchy (12 error types)
 │
-└── docs/
-    ├── ARCHITECTURE.md            ← Full system architecture
-    ├── TASK_1_ARCHITECTURE.md     ← Kafka architecture design
-    ├── TASK_2_TOPIC_CATALOG.md    ← Event catalog & topic definitions
-    └── mongodb-tasks/             ← YOUR LEARNING TRACK
-        ├── STRATEGY_MONGODB_TASKS.md ← Course philosophy (read this!)
-        ├── TASK_00_SETUP.md       ← This file
-        ├── TASK_01_USER.md        ← Start here
-        ├── TASK_02_SUPPLIER.md
-        ├── TASK_04_PRODUCT.md
-        ├── TASK_05_POST.md
-        ├── TASK_07_ORDER.md
-        ├── TASK_08_ANALYTICS.md
-        └── TASK_09_KAFKA.md
+├── scripts/
+│   ├── seed.py                      ← Seed suppliers + users via REST API
+│   ├── generate_posts.py            ← Generate sample posts
+│   └── generate_products.py         ← Generate sample products with variants
+│
+└── mongodb-tasks/                   ← YOUR LEARNING TRACK
+    ├── STRATEGY_MONGODB_TASKS.md    ← Course philosophy (read this!)
+    ├── TASK_00_SETUP.md             ← This file
+    ├── TASK_01_USER.md              ← Start here
+    ├── TASK_02_SUPPLIER.md
+    ├── TASK_04_PRODUCT.md
+    ├── TASK_05_POST.md
+    ├── TASK_07_ORDER.md
+    ├── TASK_08_ANALYTICS.md
+    └── TASK_09_KAFKA.md
 ```
 
 ### The Three Layers You Need to Understand
@@ -265,22 +275,22 @@ For every domain (User, Supplier, Product, Post, Order), there are three files y
 │  • Enums for status fields                                               │
 │  • Indexes (in class Settings)                                           │
 │                                                                          │
-│  LAYER 2: SCHEMA (src/schemas/X.py)                         READ SECOND │
+│  LAYER 2: SCHEMA (schemas/X.py)                              READ SECOND│
 │  ─────────────────────────────────────                                   │
 │  What the API sends and receives.                                        │
 │  • Request schemas (what the route gives you)                            │
 │  • Response schemas (what you must return)                               │
 │  • Validation rules (min/max lengths, enums)                             │
 │                                                                          │
-│  LAYER 3: ROUTE (src/routes/X.py)                            READ THIRD │
+│  LAYER 3: ROUTE (routes/X.py)                                 READ THIRD│
 │  ─────────────────────────────────────                                   │
 │  How your service gets called.                                           │
 │  • HTTP method + path                                                    │
 │  • What parameters the route extracts (headers, path, body)              │
 │  • How it calls YOUR service method                                      │
-│  • How it handles errors (ValueError → 400, etc.)                        │
+│  • How it handles errors (AppError hierarchy)                            │
 │                                                                          │
-│  YOUR JOB: SERVICE (src/services/X.py)                       YOU WRITE   │
+│  YOUR JOB: SERVICE (services/X.py)                              YOU WRITE│
 │  ─────────────────────────────────────                                   │
 │  The business logic + MongoDB queries.                                   │
 │  • Method signatures are given (with docstrings)                         │
@@ -296,29 +306,19 @@ For every domain (User, Supplier, Product, Post, Order), there are three files y
 
 ### What Is This Platform?
 
-A Social Commerce Platform where four user types interact:
+A Social Commerce Platform where three entity types interact:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
 │                     STAKEHOLDER ECOSYSTEM                             │
 │                                                                       │
-│                           ┌─────────┐                                 │
-│                           │  ADMIN  │                                 │
-│                           │         │                                 │
-│                           │Moderates│                                 │
-│                           │Approves │                                 │
-│                           └────┬────┘                                 │
-│                                │                                      │
-│         ┌──────────────────────┼──────────────────────┐               │
-│         │                      │                      │               │
-│         ▼                      ▼                      ▼               │
 │  ┌────────────┐        ┌────────────┐         ┌────────────┐         │
-│  │   LEADER   │        │  CONSUMER  │         │  SUPPLIER  │         │
+│  │   USER     │        │   USER     │         │  SUPPLIER  │         │
 │  │            │        │            │         │            │         │
 │  │ Creates    │◄──────►│ Browses    │◄───────►│ Lists      │         │
 │  │ posts      │ engage │ posts      │ purchase│ products   │         │
 │  │            │        │            │         │            │         │
-│  │ Curates    │        │ Discovers  │         │ Manages    │         │
+│  │ Engages    │        │ Discovers  │         │ Manages    │         │
 │  │ content    │        │ products   │         │ inventory  │         │
 │  └────────────┘        └────────────┘         └────────────┘         │
 │                                                                       │
@@ -329,18 +329,11 @@ A Social Commerce Platform where four user types interact:
 
 | # | Domain | Collection | What It Does |
 |---|--------|------------|-------------|
-| 1 | **User/Auth** | `users` | Consumer + Leader registration, login, email verification, password reset |
-| 2 | **Supplier** | `suppliers` | Vendor registration, login, profile management |
+| 1 | **User** | `users` | User registration, profile management, soft delete |
+| 2 | **Supplier** | `suppliers` | Vendor registration, company info, product ownership |
 | 3 | **Product** | `products` | Catalog items owned by Suppliers. Variants, inventory, pricing, lifecycle |
 | 4 | **Post** | `posts` | Social content created by users. Media, engagement tracking |
 | 5 | **Order** | `orders` | Purchase transactions. Status lifecycle, per-item fulfillment tracking |
-
-### Supporting Collections
-
-| Collection | Purpose |
-|-----------|---------|
-| `email_verification_tokens` | Token storage for email verification flow |
-| `password_reset_tokens` | Token storage for password reset flow |
 
 ---
 
@@ -348,58 +341,54 @@ A Social Commerce Platform where four user types interact:
 
 The FastAPI backend exposes these route groups. Each group corresponds to a service you'll implement. You can explore all of them interactively at `http://localhost:8000/docs`.
 
-### Authentication (`/register`, `/login`, ...)
+### Users (`/users`)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/register` | Register consumer user |
-| POST | `/register/leader` | Register leader user |
-| POST | `/login` | Login (email + password) |
-| POST | `/verify-email` | Verify email with token |
-| POST | `/request-password-reset` | Request password reset |
-| POST | `/reset-password` | Reset password with token |
+| POST | `/users` | Create a new user |
+| GET | `/users` | List users (with pagination) |
+| GET | `/users/{user_id}` | Get user by ID |
+| PATCH | `/users/{user_id}` | Update user profile (partial) |
+| DELETE | `/users/{user_id}` | Soft delete a user |
 
-### Supplier Auth (`/supplier/...`)
+### Suppliers (`/suppliers`)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/supplier/register` | Register supplier |
-| POST | `/supplier/login` | Supplier login |
-| POST | `/supplier/submit-documents` | Submit verification documents |
-| GET | `/supplier/me` | Get own profile |
-| PUT | `/supplier/me` | Update own profile |
+| POST | `/suppliers` | Register a new supplier |
+| GET | `/suppliers` | List suppliers (with pagination) |
+| GET | `/suppliers/{supplier_id}` | Get supplier by ID |
+| PATCH | `/suppliers/{supplier_id}` | Update supplier info (partial) |
+| DELETE | `/suppliers/{supplier_id}` | Delete a supplier |
 
-### Products (`/products/...`)
+### Products (`/products`) — requires `X-Supplier-ID` header for write operations
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/products/` | Create product |
-| GET | `/products/supplier` | List supplier's products |
-| GET | `/products/public` | Public catalog with filters |
-| GET | `/products/{id}` | Get product |
-| GET | `/products/public/{id}` | Get public product |
-| PUT | `/products/{id}` | Update product |
-| DELETE | `/products/{id}` | Soft delete |
-| POST | `/products/{id}/publish` | Publish (draft → active) |
-| POST | `/products/{id}/discontinue` | Discontinue product |
+| POST | `/products` | Create product (draft) |
+| GET | `/products` | List products (with filters: status, category, supplier_id) |
+| GET | `/products/{product_id}` | Get product by ID |
+| PATCH | `/products/{product_id}` | Update product |
+| DELETE | `/products/{product_id}` | Delete product |
+| POST | `/products/{product_id}/publish` | Publish (draft → active) |
+| POST | `/products/{product_id}/discontinue` | Discontinue product |
+| POST | `/products/{product_id}/mark-out-of-stock` | Mark out of stock |
+| POST | `/products/{product_id}/restore` | Restore to draft |
 
-### Posts (`/posts/...`)
+### Orders (`/orders`) — requires `X-User-ID` header
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/posts/` | Create post |
-| GET | `/posts/` | List posts |
-| GET | `/posts/user/{id}` | List user's posts |
-| GET | `/posts/{id}` | Get post |
-| PUT | `/posts/{id}` | Update post |
-| DELETE | `/posts/{id}` | Soft delete |
+| POST | `/orders` | Create order |
+| GET | `/orders` | List user's orders (with status filter) |
+| GET | `/orders/{order_id}` | Get order by ID |
+| POST | `/orders/{order_id}/cancel` | Cancel order |
 
-### Orders (`/orders/...`)
+### Posts (`/posts`) — requires `X-User-ID` header for write operations
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/orders/` | Create order |
-| GET | `/orders/` | List user's orders |
-| GET | `/orders/{id}` | Get order by ID |
-| GET | `/orders/number/{num}` | Get by order number |
-| POST | `/orders/{id}/complete` | Complete order (payment) |
-| PUT | `/orders/{id}` | Modify pending order |
-| POST | `/orders/{id}/cancel` | Cancel order |
+| POST | `/posts` | Create post |
+| GET | `/posts` | List published posts (with author filter) |
+| GET | `/posts/{post_id}` | Get post by ID |
+| PATCH | `/posts/{post_id}` | Update post |
+| DELETE | `/posts/{post_id}` | Soft delete post |
+| POST | `/posts/{post_id}/publish` | Publish draft post |
 
 ---
 
@@ -488,8 +477,7 @@ user_id_str = str(user.id)
 | **Pydantic** | Schemas + models | Data validation |
 | **Motor** | Under Beanie | Async MongoDB driver |
 | **confluent-kafka** | Producer + Consumer | Kafka client library |
-| **bcrypt** | Auth service | Password hashing |
-| **PyJWT** | Auth service | JWT token generation |
+| **bcrypt** | Password utility | Password hashing |
 | **MySQL Connector** | MySQL service | MySQL driver for analytics |
 
 ---
@@ -507,7 +495,7 @@ user_id_str = str(user.id)
    │
 2. IMPLEMENT one exercise at a time
    │
-   ├── Edit: apps/backend-service/src/services/<domain>.py
+   ├── Edit: apps/mongo_backend/services/<domain>.py
    ├── The container auto-reloads when you save (volume mount + --reload)
    └── No need to restart Docker
    │
@@ -528,12 +516,12 @@ The Docker setup mounts your local code into the container:
 ```yaml
 # From docker-compose.yml:
 volumes:
-  - ./apps/backend-service:/app    # Your code is live-mounted
-  - ./shared:/app/shared           # Shared models too
+  - ./apps/mongo_backend:/app     # Your code is live-mounted
+  - ./shared:/app/shared          # Shared models too
 ```
 
 This means:
-- Edit `apps/backend-service/src/services/auth.py` locally
+- Edit `apps/mongo_backend/services/user.py` locally
 - Save the file
 - The FastAPI server **auto-restarts** inside the container
 - Your changes are immediately live at `http://localhost:8000`
@@ -578,14 +566,14 @@ docker compose logs app 2>&1 | grep -i error
 Tasks MUST be completed in order. Each task builds on concepts and data from previous tasks.
 
 ```
-TASK_01: User Authentication
+TASK_01: User Service
     │     ├── find_one, insert, save, nested fields
     │     └── Foundation for everything else
     │
     ▼
-TASK_02: Supplier Authentication
-    │     ├── Deeper nesting, array field queries
-    │     └── Builds on: User patterns (same auth, harder model)
+TASK_02: Supplier Service
+    │     ├── Deeper nesting, array field queries, complex embedded docs
+    │     └── Builds on: User patterns (same CRUD, harder model)
     │
     ├─────────────────────────────────┐
     ▼                                 ▼
@@ -615,11 +603,11 @@ TASK_09: Kafka Consumers (Bonus)
 
 | Task | New MongoDB Concepts | Methods | Difficulty |
 |------|---------------------|---------|-----------|
-| **01 - User** | `find_one`, `insert`, `save`, nested field queries, index awareness | ~8 | Low |
-| **02 - Supplier** | Array field queries, deeply nested documents, dual token strategy | ~8 | Low-Medium |
-| **04 - Product** | Dict/Map fields, `$gte/$lte` ranges, cross-collection validation, status lifecycle | ~10 | Medium |
-| **05 - Post** | Cursor pagination with `$or` tiebreaker, `$inc` atomic counters, base64 cursors | ~10 | Medium-High |
-| **07 - Order** | State machine, per-item fulfillment tracking, product snapshot denormalization | ~10 | High |
+| **01 - User** | `find_one`, `insert`, `save`, nested field queries, index awareness | ~6 | Low |
+| **02 - Supplier** | Array field queries, deeply nested documents, complex embedded types | ~6 | Low-Medium |
+| **04 - Product** | Dict/Map fields, `$gte/$lte` ranges, cross-collection validation, status lifecycle | ~8 | Medium |
+| **05 - Post** | Cursor pagination with `$or` tiebreaker, `$inc` atomic counters, base64 cursors | ~7 | Medium-High |
+| **07 - Order** | State machine, per-item fulfillment tracking, product snapshot denormalization | ~7 | High |
 | **08 - Analytics** | `$match`, `$group`, `$unwind`, `$lookup`, `$facet`, `$bucket`, `$dateToString` | ~8 | Very High |
 | **09 - Kafka** | Producer/consumer pattern, event envelope, document-to-relational flattening | ~15 handlers | Bonus |
 
@@ -664,7 +652,7 @@ docker compose logs -f app
 
 # Common causes:
 # 1. Your service method raises an unhandled exception
-# 2. You returned the wrong type (route expects dict, you returned Document)
+# 2. You returned the wrong type (route expects Document, you returned dict)
 # 3. Import error in your service file
 ```
 
@@ -676,7 +664,7 @@ docker compose logs app | tail -20
 # Look for: "Detected changes in '...', reloading"
 
 # If not reloading, check the volume mount
-docker compose exec app ls -la /app/src/services/
+docker compose exec app ls -la /app/services/
 # Your local changes should appear here
 
 # Force restart
@@ -703,12 +691,12 @@ docker compose up -d
 Before starting TASK_01, verify:
 
 - [ ] `docker compose up -d` - All 5 containers running
-- [ ] `http://localhost:8000/docs` - Swagger UI loads with all endpoint groups
-- [ ] Health endpoint in Swagger returns a success response
+- [ ] `http://localhost:8000/docs` - Swagger UI loads with endpoint groups: Users, Suppliers, Products, Orders, Posts
+- [ ] Health endpoint (GET /) in Swagger returns `{"status": "ok", "message": "Social Commerce Platform API", "version": "1.0.0"}`
 - [ ] `docker compose logs app` shows "Connected to MongoDB" and "Application started successfully"
 - [ ] You understand the 3-layer architecture (Model → Schema → Route → **Service**)
-- [ ] You know where your service files are: `apps/backend-service/src/services/`
+- [ ] You know where your service files are: `apps/mongo_backend/services/`
 - [ ] You know how to view logs: `docker compose logs -f app`
 - [ ] You read this entire document
 
-**Ready? Open `docs/mongodb-tasks/TASK_01_USER.md` and start building.**
+**Ready? Open `mongodb-tasks/TASK_01_USER.md` and start building.**

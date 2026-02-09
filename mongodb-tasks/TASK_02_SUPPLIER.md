@@ -1,42 +1,42 @@
-# TASK 02: Supplier Authentication Service
+# TASK 02: Supplier Service
 
 ## 1. MISSION BRIEFING
 
 Suppliers are the **commerce engine** of the platform. While Users browse, like, and share - Suppliers stock the shelves. They are business entities (LLCs, corporations, sole proprietors) that list products, manage inventory, and fulfill orders.
 
-Suppliers are deliberately **separate from Users**. They cannot browse feeds or follow leaders. They have their own authentication system and their own set of capabilities.
+Suppliers are deliberately **separate from Users**. They have their own collection, their own authentication, and their own set of capabilities.
 
 ### What You Will Build
-The `SupplierAuthService` class - handling supplier registration, login, email verification, and password reset.
+The supplier methods inside the `UserService` class - handling supplier CRUD operations (create, read, update, delete) by writing MongoDB queries through Beanie ODM.
 
 ### What You Will Learn
 
 | MongoDB Concept | Where You'll Use It |
 |----------------|-------------------|
-| Cross-collection queries | Checking email uniqueness across **both** `suppliers` AND `users` |
-| Deep nested document construction | Building 3-level deep embedded objects |
-| Multiple required embedded documents | Constructing `contact_info` + `company_info` + `business_info` |
-| Array field validation in queries | Checking `contact_info.additional_emails` array |
+| Deep nested document construction | Building 3-level deep embedded objects (company_info.business_address.city) |
+| Multiple required embedded documents | Constructing `contact_info` + `company_info` + `business_info` + `banking_info` |
+| Multi-level partial updates | Updating fields across different nested objects |
 | Compound index awareness | Understanding the location-based compound index |
+| Hard delete pattern | Using `document.delete()` (contrast with User's soft delete) |
 
 ### How This Differs From TASK_01 (User)
 
 | Aspect | User (TASK_01) | Supplier (TASK_02) |
 |--------|---------------|-------------------|
-| Embedded types | 3 (`ContactInfo`, `BusinessAddress`, `UserProfile`) | **5** (`SupplierContactInfo`, `CompanyAddress`, `CompanyInfo`, `BusinessInfo`, `BankingInfo`) |
-| Registration fields | 3 fields (email, password, name) | **~12 fields** across multiple embedded objects |
-| Email check scope | Users only | **Suppliers + Users** (cross-collection) |
+| Embedded types | 3 (`ContactInfo`, `BusinessAddress`, `UserProfile`) | **6** (`SupplierContactInfo`, `CompanyAddress`, `CompanyInfo`, `BusinessInfo`, `BankingInfo`) |
+| Registration input | 5 flat fields (email, password, name, phone, bio) | **Structured body** with nested objects (`CreateSupplierRequest`) |
 | Indexes | None | **1 compound index** (location) |
 | Nesting depth | 2 levels | **3 levels** (company_info.business_address.city) |
-| Token payload key | `user_id` | `supplier_id` |
+| Deletion | Soft delete (`deleted_at` timestamp) | **Hard delete** (document removed) |
+| Partial update | 4 flat fields | **5 fields across 3 nested objects** |
 
 ---
 
 ## 2. BEFORE YOU START
 
 ### Prerequisites
-- **TASK_01 (User) must be complete** - Supplier email check crosses into the Users collection
-- MongoDB running locally
+- **TASK_01 (User) must be complete** - Supplier methods live in the same `UserService` class
+- All 5 Docker containers running
 - Familiarity with Beanie ODM patterns from TASK_01
 
 ### Files You MUST Read Before Coding
@@ -53,21 +53,29 @@ This is a larger model than User. Pay attention to:
 
 #### Step 2: The Schema (the API contract)
 ```
-apps/backend-service/src/schemas/supplier_auth.py
+apps/mongo_backend/schemas/user.py
 ```
-Notice the registration request has more fields than User's 3.
+The supplier schemas are in the same file as user schemas. Focus on:
+- `CreateSupplierRequest` - structured body with nested `ContactInfoRequest`, `CompanyInfoRequest`, `BusinessInfoRequest`, `BankingInfoRequest`
+- `UpdateSupplierRequest` - flat partial update fields: `primary_phone`, `legal_name`, `dba_name`, `support_email`, `support_phone`
 
 #### Step 3: The Route (who calls you)
 ```
-apps/backend-service/src/routes/supplier_auth.py
+apps/mongo_backend/routes/user.py
 ```
+The supplier routes are in the same file as user routes, using a separate `supplier_router` with prefix `/suppliers`. Notice:
+- The route calls `user_service.create_supplier(body)` passing the full request body
+- The route wraps returns with `supplier_response()` (strips `password_hash`, adds `id`)
+- Update route destructures the body into individual keyword arguments
 
-#### Step 4: The Utilities (same as TASK_01)
+#### Step 4: The Utilities
 ```
-apps/backend-service/src/utils/datetime_utils.py    → utc_now()
-apps/backend-service/src/utils/serialization.py     → oid_to_str()
-apps/backend-service/src/kafka/producer.py          → KafkaProducer.emit()
-apps/backend-service/src/kafka/topics.py            → Topic.SUPPLIER
+apps/mongo_backend/utils/password.py          → hash_password(password)
+apps/mongo_backend/utils/datetime_utils.py    → utc_now()
+apps/mongo_backend/utils/serialization.py     → oid_to_str()
+apps/mongo_backend/kafka/producer.py          → KafkaProducer.emit()
+shared/kafka/topics.py                        → EventType.SUPPLIER_CREATED, etc.
+shared/errors.py                              → DuplicateError, NotFoundError
 ```
 
 ---
@@ -131,8 +139,8 @@ A Supplier document in MongoDB is significantly larger than a User document. Her
 Supplier (Document → stored in "suppliers" collection)
 ├── password_hash (str)
 ├── contact_info (SupplierContactInfo)
-│   ├── primary_email (EmailStr)              ← LOGIN KEY
-│   ├── additional_emails (List[EmailStr])    ← CHECKED FOR EMAIL UNIQUENESS
+│   ├── primary_email (EmailStr)              ← UNIQUENESS KEY
+│   ├── additional_emails (List[EmailStr])
 │   ├── primary_phone (str)
 │   ├── contact_person_name (Optional[str])   ← WHO TO REACH
 │   ├── contact_person_title (Optional[str])
@@ -141,7 +149,7 @@ Supplier (Document → stored in "suppliers" collection)
 ├── company_info (CompanyInfo)
 │   ├── legal_name (str)                      ← OFFICIAL COMPANY NAME
 │   ├── dba_name (Optional[str])              ← "DOING BUSINESS AS"
-│   ├── business_address (CompanyAddress)      ← REQUIRED
+│   ├── business_address (CompanyAddress)      ← REQUIRED, 3 LEVELS DEEP
 │   │   ├── street_address_1 (str)
 │   │   ├── street_address_2 (Optional[str])
 │   │   ├── city, state, zip_code, country
@@ -150,7 +158,7 @@ Supplier (Document → stored in "suppliers" collection)
 │   ├── facebook_url, instagram_handle, twitter_handle, linkedin_url
 │   ├── timezone (Optional[str])
 │   └── support_email, support_phone
-├── banking_info (Optional[BankingInfo])       ← ADDED LATER, NOT IN REGISTRATION
+├── banking_info (Optional[BankingInfo])       ← CAN BE NULL
 │   ├── bank_name (Optional[str])
 │   ├── account_holder_name (Optional[str])
 │   └── account_number_last4 (Optional[str])
@@ -177,42 +185,21 @@ The model provides one overridden method:
 await supplier.save()  # Automatically sets updated_at to utc_now() before saving
 ```
 
-There are no other helper methods - your service layer will implement all business logic directly.
-
 ---
 
 ## 4. THE SERVICE CONTRACT
 
-### Class Setup
-
-```python
-class SupplierAuthService:
-    def __init__(self):
-        self.password_min_length = 10          # Stricter: 10 vs User's 8
-        self.password_max_length = 128
-        self._kafka = get_kafka_producer()
-        # Pattern now requires special char (!@#$%^&*) - User doesn't
-        self.password_pattern = re.compile(
-            r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*]).+$'
-        )
-```
+The supplier methods live in the same `UserService` class as user methods. Here is every supplier method you must implement.
 
 ### Method Signatures
 
 | # | Method | MongoDB Operation | Returns |
 |---|--------|------------------|---------|
-| 1 | `generate_verification_token(supplier_id, email)` | None | `str` (JWT) |
-| 2 | `generate_reset_token(supplier_id, email)` | None | `str` (JWT) |
-| 3 | `verify_token(token, token_type)` | None | `Dict` (payload) |
-| 4 | `hash_password(password)` | None | `str` |
-| 5 | `verify_password(password, hash)` | None | `bool` |
-| 6 | `validate_password(password, email)` | None | `None` (raises) |
-| 7 | `is_email_available(email)` | `find_one` x3 (2 collections!) | `bool` |
-| 8 | `register_supplier(~12 params)` | `insert` | `Dict` |
-| 9 | `login(email, password)` | `find_one` + `save` | `Dict` |
-| 10 | `verify_email(token)` | `get` + `save` | `Dict` |
-| 11 | `request_password_reset(email)` | `find_one` | `Optional[str]` |
-| 12 | `reset_password(token, new_password)` | `get` + `save` | `Dict` |
+| 1 | `create_supplier(body)` | `find_one` + `insert` | `Supplier` |
+| 2 | `get_supplier(supplier_id)` | `get` by ObjectId | `Supplier` |
+| 3 | `list_suppliers(skip, limit)` | `find_all` + skip/limit | `list[Supplier]` |
+| 4 | `update_supplier(supplier_id, primary_phone, legal_name, dba_name, support_email, support_phone)` | `get` + `save` | `Supplier` |
+| 5 | `delete_supplier(supplier_id)` | `get` + `delete` | `None` |
 
 ---
 
@@ -220,222 +207,60 @@ class SupplierAuthService:
 
 ---
 
-### Exercise 5.1: Utility Foundation - Stricter Rules
-
-**Concept:** Password validation with special character requirement + JWT tokens for supplier
-**Difficulty:** Warm-up
-**What's new from TASK_01:** Special character requirement in password, supplier-prefixed token types
-
-#### Implement these 6 methods:
-
-**5.1.1 through 5.1.3 - Token utilities (same pattern as TASK_01, different values)**
-
-- `generate_verification_token(supplier_id, email)` → payload key is `"supplier_id"` (not `"user_id"`), type is `"supplier_email_verification"`, 6h expiry
-- `generate_reset_token(supplier_id, email)` → type is `"supplier_password_reset"`, 1h expiry
-- `verify_token(token, token_type)` → identical pattern to TASK_01
-
-**5.1.4 through 5.1.6 - Password utilities (stricter than TASK_01)**
-
-- `hash_password(password)` → identical to TASK_01
-- `verify_password(password, hash)` → identical to TASK_01
-- `validate_password(password, email)` → **DIFFERENT from TASK_01:**
-  - Min length is `10` (not 8)
-  - Pattern requires special character `(!@#$%^&*)` in addition to upper+lower+digit
-  - Error message: `"Password must contain at least one uppercase letter, one lowercase letter, one digit, and one special character (!@#$%^&*)"`
-  - Same email username check
-
-#### Verify Exercise 5.1
-
-```python
-svc = SupplierAuthService()
-
-# Password: must have special char
-svc.validate_password("MyPass123!", "test@acme.com")  # OK
-# svc.validate_password("MyPass123", "test@acme.com")  # Raises - no special char
-# svc.validate_password("Short1!", "t@a.com")          # Raises - only 7 chars (need 10)
-```
-
----
-
-### Exercise 5.2: Cross-Collection Email Check
-
-**Concept:** Querying TWO different collections in a single method
-**Difficulty:** Easy-Medium
-**What's new from TASK_01:** You now query **both** the `suppliers` collection AND the `users` collection. This is a cross-collection uniqueness check.
-
-#### Implement: `is_email_available(self, email: str) -> bool`
-
-**Business Rules:**
-1. Normalize email (lowercase, strip)
-2. Check suppliers - primary email: `Supplier.find_one({"contact_info.primary_email": email})`
-3. Check suppliers - additional emails: `Supplier.find_one({"contact_info.additional_emails": email})`
-4. Check users - primary email: `User.find_one({"contact_info.primary_email": email})`
-5. Return `False` if ANY check finds a match, `True` otherwise
-
-**The MongoDB Queries:**
-```
-Query 1: suppliers.findOne({"contact_info.primary_email": email})
-Query 2: suppliers.findOne({"contact_info.additional_emails": email})
-Query 3: users.findOne({"contact_info.primary_email": email})   ← CROSS-COLLECTION
-```
-
-> **Why cross-collection?** Imagine a supplier registers with `john@acme.com`, and a user also registers with `john@acme.com`. When `john@acme.com` tries to log in as a supplier, we find the supplier. When they try to log in as a user, we find the user. Same email, two accounts. This causes confusion and potential security issues. By checking both collections, we ensure global email uniqueness.
-
-**Import required:**
-```python
-from shared.models.user import User  # Needed for cross-collection check
-```
-
-**Error handling:**
-- Wrap in try/except
-- Re-raise as `Exception(f"Failed to check email availability: {str(e)}")`
-
-<details>
-<summary><b>Hint Level 1</b> - Direction</summary>
-
-This is the same `find_one` pattern from TASK_01, just called three times on two different model classes. Beanie routes each query to the correct MongoDB collection based on the model's `Settings.name`.
-
-`Supplier.find_one(...)` queries the `suppliers` collection.
-`User.find_one(...)` queries the `users` collection.
-
-</details>
-
-<details>
-<summary><b>Hint Level 2</b> - Pattern</summary>
-
-```python
-async def is_email_available(self, email: str) -> bool:
-    try:
-        email = email.lower().strip()
-
-        # Check suppliers (primary)
-        supplier = await Supplier.find_one({"contact_info.primary_email": email})
-        if supplier:
-            return False
-
-        # Check suppliers (additional)
-        supplier = await Supplier.find_one({"contact_info.additional_emails": email})
-        if supplier:
-            return False
-
-        # Check users (cross-collection)
-        from shared.models.user import User
-        user = await User.find_one({"contact_info.primary_email": email})
-        if user:
-            return False
-
-        return True
-    except Exception as e:
-        raise Exception(f"Failed to check email availability: {str(e)}")
-```
-
-</details>
-
-<details>
-<summary><b>Hint Level 3</b> - Complete solution</summary>
-
-The Hint Level 2 IS the complete solution for this method. The key learning point is the cross-collection pattern: using different Beanie model classes to query different MongoDB collections within the same method.
-
-</details>
-
-#### Verify Exercise 5.2
-
-After completing TASK_01, you should have users in the `users` collection:
-```bash
-# This email was registered as a User in TASK_01
-# Supplier email check should also catch it:
-# await svc.is_email_available("consumer@example.com")  → False (found in users)
-# await svc.is_email_available("brand-new@acme.com")    → True  (not in either)
-```
-
-#### Cross-Collection Checkpoint
-
-**Question:** How does Beanie know which MongoDB collection to query?
-
-<details>
-<summary>Answer</summary>
-
-Each Beanie `Document` class has an inner `Settings` class with a `name` attribute:
-- `User` → queries the `users` collection (default name based on class)
-- `Supplier.Settings.name = "suppliers"` → queries the `suppliers` collection
-
-When you call `User.find_one(...)`, Beanie translates it to `db.users.findOne(...)`. When you call `Supplier.find_one(...)`, it becomes `db.suppliers.findOne(...)`. Same syntax, different collections.
-
-</details>
-
----
-
-### Exercise 5.3: Register Supplier - The Big Build
+### Exercise 5.1: Create Supplier - The Big Build
 
 **Concept:** Constructing a document with multiple required embedded objects at multiple nesting depths
 **Difficulty:** Medium-High
-**What's new from TASK_01:** User registration took 3 parameters. Supplier registration takes many more. You must build multiple embedded objects and wire them together.
+**What's new from TASK_01:** User creation took 5 flat parameters. Supplier creation receives a structured `CreateSupplierRequest` body with nested objects. You must map each request object to its corresponding model object.
 
-#### Implement: `register_supplier(self, primary_email, password, primary_phone, contact_person_name, contact_person_title, legal_name, street_address, city, state, zip_code, country, dba_name=None, support_email=None, timezone=None) -> Dict[str, Any]`
+#### Implement: `create_supplier(self, body) -> Supplier`
 
-**Business Rules (implement in this exact order):**
-
-1. **Normalize inputs:**
-   - `primary_email.lower().strip()`
-   - `contact_person_name.strip()`
-   - `legal_name.strip()`
-
-2. **Check email availability:**
-   - Use `self.is_email_available(primary_email)`
-   - If not available → `ValueError("Email already in use")`
-
-3. **Validate password:**
-   - `self.validate_password(password, primary_email)`
-
-4. **Validate country code:**
-   - `country` must be exactly 2 characters
-   - If not → `ValueError("Country code must be a 2-letter ISO code")`
-
-5. **Build the document** (inside → out):
-
+The `body` parameter is a `CreateSupplierRequest` with this structure:
 ```
-Step A: Build CompanyAddress
-    └── street_address_1, city, state (default "N/A"), zip_code, country
-
-Step B: Build SupplierContactInfo
-    └── primary_email, primary_phone, contact_person_name, title, email (defaults to primary_email)
-
-Step C: Build CompanyInfo
-    └── legal_name, dba_name, business_address (from A)
-
-Step D: Build BusinessInfo
-    └── timezone, support_email
-
-Step E: Build Supplier
-    └── password_hash, contact_info (B), company_info (C), business_info (D)
+body.password                              → str
+body.contact_info                          → ContactInfoRequest
+body.contact_info.primary_email            → EmailStr
+body.contact_info.additional_emails        → List[EmailStr]
+body.contact_info.primary_phone            → str
+body.contact_info.contact_person_name      → Optional[str]
+body.contact_info.contact_person_title     → Optional[str]
+body.contact_info.contact_person_email     → Optional[EmailStr]
+body.contact_info.contact_person_phone     → Optional[str]
+body.company_info                          → CompanyInfoRequest
+body.company_info.legal_name              → str
+body.company_info.dba_name               → Optional[str]
+body.company_info.business_address        → CompanyAddressRequest
+body.company_info.shipping_address        → Optional[CompanyAddressRequest]
+body.business_info                        → BusinessInfoRequest
+body.banking_info                         → Optional[BankingInfoRequest]
 ```
 
-6. **Insert the document:**
-   - `await supplier.insert()`
+**Business Rules (implement in this order):**
 
-7. **Emit Kafka event:**
-   - topic=`Topic.SUPPLIER`, action=`"registered"`, data=full supplier dump
+1. **Normalize email:** `body.contact_info.primary_email.lower().strip()`
+2. **Check email uniqueness:**
+   - Query `Supplier.find_one({"contact_info.primary_email": email})`
+   - If found → raise `DuplicateError("Email already in use")`
+3. **Build embedded objects (inside → out):**
 
-8. **Generate verification token**
-
-9. **Return result:**
-```python
-{
-    "supplier": {
-        "id": supplier_id,
-        "email": supplier.contact_info.primary_email,
-        "company_name": supplier.company_info.legal_name
-    },
-    "verification_token": verification_token
-}
 ```
+Step A: Build SupplierContactInfo from body.contact_info
+Step B: Build CompanyAddress from body.company_info.business_address
+Step C: (Optional) Build shipping CompanyAddress from body.company_info.shipping_address
+Step D: Build CompanyInfo from body.company_info + address(es)
+Step E: Build BusinessInfo from body.business_info
+Step F: (Optional) Build BankingInfo from body.banking_info
+Step G: Build Supplier from all of the above
+```
+
+4. **Insert the document:** `await supplier.insert()`
+5. **Emit Kafka event:** `EventType.SUPPLIER_CREATED`
+6. **Return the Supplier document**
 
 <details>
 <summary><b>Hint Level 1</b> - Direction</summary>
 
-The construction pattern is the same as TASK_01's `register_consumer`, but with MORE embedded objects. Build each embedded object as a separate variable (address, contact_info, company_info, business_info), then assemble the Supplier from all of them.
-
-Pay attention to `SupplierContactInfo` - it takes `contact_person_email=primary_email` (the contact person's email defaults to the supplier's primary email).
+The construction pattern is the same as TASK_01's `create_user`, but with MORE embedded objects. Build each embedded object as a separate variable, then assemble the Supplier from all of them. Access nested request fields with dot notation: `body.contact_info.primary_email`.
 
 </details>
 
@@ -443,84 +268,171 @@ Pay attention to `SupplierContactInfo` - it takes `contact_person_email=primary_
 <summary><b>Hint Level 2</b> - The document construction</summary>
 
 ```python
-supplier = Supplier(
-    password_hash=self.hash_password(password),
-    contact_info=SupplierContactInfo(
-        primary_email=primary_email,
-        primary_phone=primary_phone,
-        contact_person_name=contact_person_name,
-        contact_person_title=contact_person_title,
-        contact_person_email=primary_email  # defaults to primary email
-    ),
-    company_info=CompanyInfo(
-        legal_name=legal_name,
-        dba_name=dba_name,
-        business_address=CompanyAddress(
-            street_address_1=street_address,
-            city=city,
-            state=state or "N/A",
-            zip_code=zip_code,
-            country=country
-        )
-    ),
-    business_info=BusinessInfo(
-        timezone=timezone,
-        support_email=support_email
-    )
+# Build contact info
+ci = body.contact_info
+contact_info = SupplierContactInfo(
+    primary_email=email,
+    additional_emails=ci.additional_emails,
+    primary_phone=ci.primary_phone,
+    contact_person_name=ci.contact_person_name,
+    contact_person_title=ci.contact_person_title,
+    contact_person_email=ci.contact_person_email,
+    contact_person_phone=ci.contact_person_phone,
+)
+
+# Build address
+addr = body.company_info.business_address
+business_address = CompanyAddress(
+    street_address_1=addr.street_address_1,
+    street_address_2=addr.street_address_2,
+    city=addr.city,
+    state=addr.state,
+    zip_code=addr.zip_code,
+    country=addr.country,
+)
+
+# Build company info
+company_info = CompanyInfo(
+    legal_name=body.company_info.legal_name,
+    dba_name=body.company_info.dba_name,
+    business_address=business_address,
+    shipping_address=...,  # same pattern if provided
 )
 ```
 
 </details>
 
-#### Verify Exercise 5.3
+<details>
+<summary><b>Hint Level 3</b> - Near-complete solution</summary>
+
+```python
+async def create_supplier(self, body):
+    email = body.contact_info.primary_email.lower().strip()
+    existing = await Supplier.find_one({"contact_info.primary_email": email})
+    if existing:
+        raise DuplicateError("Email already in use")
+
+    ci = body.contact_info
+    contact_info = SupplierContactInfo(
+        primary_email=email,
+        additional_emails=ci.additional_emails,
+        primary_phone=ci.primary_phone,
+        contact_person_name=ci.contact_person_name,
+        contact_person_title=ci.contact_person_title,
+        contact_person_email=ci.contact_person_email,
+        contact_person_phone=ci.contact_person_phone,
+    )
+
+    addr = body.company_info.business_address
+    business_address = CompanyAddress(
+        street_address_1=addr.street_address_1,
+        street_address_2=addr.street_address_2,
+        city=addr.city, state=addr.state,
+        zip_code=addr.zip_code, country=addr.country,
+    )
+
+    shipping_address = None
+    if body.company_info.shipping_address:
+        sa = body.company_info.shipping_address
+        shipping_address = CompanyAddress(
+            street_address_1=sa.street_address_1,
+            street_address_2=sa.street_address_2,
+            city=sa.city, state=sa.state,
+            zip_code=sa.zip_code, country=sa.country,
+        )
+
+    company_info = CompanyInfo(
+        legal_name=body.company_info.legal_name,
+        dba_name=body.company_info.dba_name,
+        business_address=business_address,
+        shipping_address=shipping_address,
+    )
+
+    bi = body.business_info
+    business_info = BusinessInfo(
+        facebook_url=bi.facebook_url, instagram_handle=bi.instagram_handle,
+        twitter_handle=bi.twitter_handle, linkedin_url=bi.linkedin_url,
+        timezone=bi.timezone, support_email=bi.support_email,
+        support_phone=bi.support_phone,
+    )
+
+    banking_info = None
+    if body.banking_info:
+        banking_info = BankingInfo(
+            bank_name=body.banking_info.bank_name,
+            account_holder_name=body.banking_info.account_holder_name,
+            account_number_last4=body.banking_info.account_number_last4,
+        )
+
+    supplier = Supplier(
+        password_hash=hash_password(body.password),
+        contact_info=contact_info,
+        company_info=company_info,
+        business_info=business_info,
+        banking_info=banking_info,
+    )
+    await supplier.insert()
+
+    self._kafka.emit(
+        event_type=EventType.SUPPLIER_CREATED,
+        entity_id=oid_to_str(supplier.id),
+        data=supplier.model_dump(mode="json"),
+    )
+    return supplier
+```
+
+</details>
+
+#### Verify Exercise 5.1
 
 ```bash
-curl -X POST http://localhost:8000/supplier/register \
+curl -X POST http://localhost:8000/suppliers \
   -H "Content-Type: application/json" \
   -d '{
-    "primary_email": "sales@acme-electronics.com",
     "password": "SecurePass1!",
-    "primary_phone": "+1-555-0100",
-    "contact_person_name": "John Doe",
-    "contact_person_title": "Sales Director",
-    "legal_name": "Acme Electronics Inc",
-    "street_address": "100 Commerce Blvd",
-    "city": "New York",
-    "state": "NY",
-    "zip_code": "10001",
-    "country": "US"
+    "contact_info": {
+      "primary_email": "sales@acme-electronics.com",
+      "primary_phone": "+1-555-0100",
+      "contact_person_name": "John Doe",
+      "contact_person_title": "Sales Director"
+    },
+    "company_info": {
+      "legal_name": "Acme Electronics Inc",
+      "business_address": {
+        "street_address_1": "100 Commerce Blvd",
+        "city": "New York",
+        "state": "NY",
+        "zip_code": "10001",
+        "country": "US"
+      }
+    }
   }'
 ```
 
 **Expected response (201 Created):**
 ```json
 {
-  "supplier": {
-    "id": "<object-id>",
-    "email": "sales@acme-electronics.com",
-    "company_name": "Acme Electronics Inc"
+  "id": "<object-id>",
+  "contact_info": {
+    "primary_email": "sales@acme-electronics.com",
+    "additional_emails": [],
+    "primary_phone": "+1-555-0100",
+    "contact_person_name": "John Doe",
+    "contact_person_title": "Sales Director",
+    ...
   },
-  "verification_token": "<jwt-token>"
+  "company_info": {
+    "legal_name": "Acme Electronics Inc",
+    "business_address": {
+      "street_address_1": "100 Commerce Blvd",
+      "city": "New York",
+      "state": "NY",
+      ...
+    }
+  },
+  ...
 }
 ```
-
-**Test cross-collection email rejection (use an email from TASK_01):**
-```bash
-curl -X POST http://localhost:8000/supplier/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "primary_email": "consumer@example.com",
-    "password": "SecurePass1!",
-    "primary_phone": "+1-555-0100",
-    "contact_person_name": "Duplicate",
-    "legal_name": "Dupe Corp",
-    "street_address": "1 Main St",
-    "city": "LA",
-    "zip_code": "90001",
-    "country": "US"
-  }'
-```
-Should return 400: "Email already in use"
 
 **Verify the nested structure in MongoDB shell:**
 ```javascript
@@ -536,190 +448,210 @@ db.suppliers.findOne(
 
 ---
 
-### Exercise 5.4: The Login Flow
+### Exercise 5.2: Get Supplier - ID Lookup
 
-**Concept:** `find_one` + password verification + `save` for timestamp update
-**Difficulty:** Medium
-**What's new from TASK_01:** Querying the `Supplier` model instead of `User`, supplier-specific return format.
+**Concept:** `Supplier.get(PydanticObjectId)` - same pattern as User, different collection
+**Difficulty:** Easy
+**What's reinforced:** The `get` by ID pattern from TASK_01.
 
-#### Implement: `login(self, email: str, password: str) -> Dict[str, Any]`
+#### Implement: `get_supplier(self, supplier_id: str) -> Supplier`
 
-**Phases:**
+**Business Rules:**
+1. Convert string `supplier_id` to `PydanticObjectId`
+   - If invalid → raise `NotFoundError("Supplier not found")`
+2. Fetch the supplier by `_id`
+   - If not found → raise `NotFoundError("Supplier not found")`
+3. Return the Supplier document
 
-#### Phase 1: Find the supplier
-- Normalize email
-- `Supplier.find_one({"contact_info.primary_email": email})`
-- Not found → `ValueError("Invalid email or password")`
+> **Note:** Unlike User, Supplier does NOT have soft delete. No `deleted_at` check needed.
 
-#### Phase 2: Verify password
-- Use `self.verify_password(password, supplier.password_hash)`
-- If wrong → `ValueError("Invalid email or password")`
-
-#### Phase 3: Save and return
-- Save the supplier (triggers `updated_at` update)
-- Emit Kafka event: topic=`Topic.SUPPLIER`, action=`"login"`
-- Return supplier data:
+<details>
+<summary><b>Hint Level 1</b> - Pattern</summary>
 
 ```python
-{
-    "id": supplier_id,
-    "email": supplier.contact_info.primary_email,
-    "company_name": supplier.company_info.legal_name
-}
+try:
+    supplier = await Supplier.get(PydanticObjectId(supplier_id))
+except Exception:
+    raise NotFoundError("Supplier not found")
+if not supplier:
+    raise NotFoundError("Supplier not found")
+return supplier
 ```
 
-**Error handling:**
-- `ValueError` → re-raise
-- Any other → raise `Exception(f"Failed to login: {str(e)}")`
+</details>
+
+#### Verify Exercise 5.2
+
+```bash
+curl http://localhost:8000/suppliers/<supplier-id>
+```
+
+---
+
+### Exercise 5.3: List Suppliers - Pagination
+
+**Concept:** `find_all()` + skip/limit (no filter needed - no soft delete)
+**Difficulty:** Easy
+**What's different from TASK_01:** No `deleted_at` filter needed since suppliers use hard delete.
+
+#### Implement: `list_suppliers(self, skip: int = 0, limit: int = 20) -> list[Supplier]`
+
+**Business Rules:**
+1. Query all suppliers (no filter needed)
+2. Apply `skip` and `limit` (cap at 100)
+3. Return the list
+
+<details>
+<summary><b>Hint Level 1</b> - Pattern</summary>
+
+```python
+return (
+    await Supplier.find_all()
+    .skip(skip)
+    .limit(min(limit, 100))
+    .to_list()
+)
+```
+
+</details>
+
+#### Verify Exercise 5.3
+
+```bash
+curl "http://localhost:8000/suppliers?limit=10&skip=0"
+```
+
+---
+
+### Exercise 5.4: Update Supplier - Multi-Level Partial Update
+
+**Concept:** Updating fields across different nested objects in a single save
+**Difficulty:** Medium
+**What's new from TASK_01:** In TASK_01, all updatable fields lived in two objects (`profile` and `contact_info`). Here, updatable fields are spread across THREE nested objects: `contact_info.primary_phone`, `company_info.legal_name`, `company_info.dba_name`, `business_info.support_email`, `business_info.support_phone`.
+
+#### Implement: `update_supplier(self, supplier_id, primary_phone=None, legal_name=None, dba_name=None, support_email=None, support_phone=None) -> Supplier`
+
+**Business Rules:**
+1. Fetch the supplier using `self.get_supplier(supplier_id)`
+2. For each parameter that is **not None**, update the corresponding nested field:
+   - `primary_phone` → `supplier.contact_info.primary_phone`
+   - `legal_name` → `supplier.company_info.legal_name`
+   - `dba_name` → `supplier.company_info.dba_name`
+   - `support_email` → `supplier.business_info.support_email`
+   - `support_phone` → `supplier.business_info.support_phone`
+3. Save the supplier (auto-updates `updated_at`)
+4. Emit `EventType.SUPPLIER_UPDATED` Kafka event
+5. Return the updated Supplier document
+
+**Key learning:** Notice how a single `save()` call updates fields across three different embedded objects. Beanie replaces the entire document in MongoDB - it doesn't send partial updates. This is the "fetch → modify → replace" pattern.
 
 <details>
 <summary><b>Hint Level 1</b> - Direction</summary>
 
-The login flow is nearly identical to TASK_01's login. The differences are:
-1. Query `Supplier` instead of `User`
-2. The returned dict includes a `company_name` field specific to suppliers
-3. Use `Topic.SUPPLIER` for the Kafka event
+Same pattern as TASK_01's `update_user` - check each param for `is not None`, then assign. The difference is which nested object each field belongs to.
+
+</details>
+
+<details>
+<summary><b>Hint Level 2</b> - Pattern</summary>
+
+```python
+supplier = await self.get_supplier(supplier_id)
+
+if primary_phone is not None:
+    supplier.contact_info.primary_phone = primary_phone
+if legal_name is not None:
+    supplier.company_info.legal_name = legal_name
+if dba_name is not None:
+    supplier.company_info.dba_name = dba_name
+if support_email is not None:
+    supplier.business_info.support_email = support_email
+if support_phone is not None:
+    supplier.business_info.support_phone = support_phone
+
+await supplier.save()
+
+self._kafka.emit(
+    event_type=EventType.SUPPLIER_UPDATED,
+    entity_id=oid_to_str(supplier.id),
+    data=supplier.model_dump(mode="json"),
+)
+return supplier
+```
 
 </details>
 
 #### Verify Exercise 5.4
 
 ```bash
-curl -X POST http://localhost:8000/supplier/login \
+curl -X PATCH http://localhost:8000/suppliers/<supplier-id> \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "sales@acme-electronics.com",
-    "password": "SecurePass1!"
+    "legal_name": "Acme Electronics LLC",
+    "support_email": "help@acme-electronics.com"
   }'
 ```
 
-**Expected (200 OK):**
-```json
-{
-  "supplier": {
-    "id": "<object-id>",
-    "email": "sales@acme-electronics.com",
-    "company_name": "Acme Electronics Inc"
-  }
-}
+**Expected:** Supplier with updated `company_info.legal_name` and `business_info.support_email`, all other fields unchanged.
+
+**Verify in MongoDB shell:**
+```javascript
+db.suppliers.findOne(
+  {"_id": ObjectId("<supplier-id>")},
+  {"company_info.legal_name": 1, "business_info.support_email": 1, "updated_at": 1}
+)
 ```
 
 ---
 
-### Exercise 5.5: Email Verification
+### Exercise 5.5: Delete Supplier - Hard Delete
 
-**Concept:** `Supplier.get(ObjectId)` + save
-**Difficulty:** Easy-Medium
-**What's reinforced:** The `get` by ID pattern from TASK_01, applied to a different collection.
+**Concept:** `document.delete()` - permanent removal (contrast with User's soft delete)
+**Difficulty:** Easy
+**What's new from TASK_01:** In TASK_01, you set `deleted_at` and saved. Here, you permanently remove the document from the collection.
 
-#### Implement: `verify_email(self, token: str) -> Dict[str, Any]`
+#### Implement: `delete_supplier(self, supplier_id: str) -> None`
 
 **Business Rules:**
-1. Verify the token: `self.verify_token(token, "supplier_email_verification")`
-   - Note: token type is `"supplier_email_verification"` (not `"email_verification"`)
-   - Payload key is `"supplier_id"` (not `"user_id"`)
-2. Get supplier by ID: `Supplier.get(ObjectId(supplier_id))`
-   - Not found → `ValueError("Supplier not found")`
-3. Save the supplier (to update `updated_at` timestamp)
-4. Emit Kafka event: topic=`Topic.SUPPLIER`, action=`"email_verified"`
-5. Return result:
+1. Fetch the supplier using `self.get_supplier(supplier_id)`
+2. Delete the document permanently: `await supplier.delete()`
+3. Emit `EventType.SUPPLIER_DELETED` Kafka event
+4. Return nothing
 
-```python
-{
-    "id": str(supplier.id),
-    "email": supplier.contact_info.primary_email,
-    "verified": True
-}
-```
+**Why hard delete here but soft delete for Users?**
+- Users have relationships (orders, posts) that reference them. Soft delete preserves referential integrity.
+- Suppliers can also have products, but the system design chooses permanent removal. Products would become orphaned - this is a deliberate simplification.
 
 <details>
-<summary><b>Hint Level 1</b> - Direction</summary>
+<summary><b>Hint Level 1</b> - Pattern</summary>
 
-This is the same pattern as TASK_01's verify_email. Just use `Supplier.get()` instead of `User.get()`, and extract `"supplier_id"` from the payload instead of `"user_id"`.
+```python
+supplier = await self.get_supplier(supplier_id)
+await supplier.delete()
+
+self._kafka.emit(
+    event_type=EventType.SUPPLIER_DELETED,
+    entity_id=oid_to_str(supplier.id),
+    data={"supplier_id": oid_to_str(supplier.id)},
+)
+```
 
 </details>
 
 #### Verify Exercise 5.5
 
 ```bash
-# Register a fresh supplier and capture the token, then verify:
-curl -X POST http://localhost:8000/supplier/verify-email \
-  -H "Content-Type: application/json" \
-  -d '{"token": "<verification-token-from-registration>"}'
-```
+# Delete the supplier
+curl -X DELETE http://localhost:8000/suppliers/<supplier-id>
+# Expected: 204 No Content
 
-**Expected (200 OK):**
-```json
-{
-  "id": "<object-id>",
-  "email": "sales@acme-electronics.com",
-  "verified": true
-}
-```
+# Try to get the deleted supplier
+curl http://localhost:8000/suppliers/<supplier-id>
+# Expected: 404 Not Found
 
----
-
-### Exercise 5.6: Password Reset Flow
-
-**Concept:** Combining patterns from TASK_01, applied to the suppliers collection
-**Difficulty:** Medium
-**What's reinforced:** `find_one` → token → `get` by ID → field update → `save`
-
-#### Implement TWO methods:
-
-**5.6.1 - `request_password_reset(self, email: str) -> Optional[str]`**
-
-Requirements:
-1. Normalize email
-2. `Supplier.find_one({"contact_info.primary_email": email})`
-3. Not found → return `None`
-4. Emit Kafka event: topic=`Topic.SUPPLIER`, action=`"password_reset_requested"`
-5. Generate reset token using `self.generate_reset_token(str(supplier.id), email)`
-6. Return the token
-
-**5.6.2 - `reset_password(self, token: str, new_password: str) -> Dict[str, Any]`**
-
-Requirements:
-1. Verify token: `self.verify_token(token, "supplier_password_reset")`
-2. Extract `supplier_id` and `email` from payload
-3. Get supplier: `Supplier.get(ObjectId(supplier_id))`
-   - Not found → `ValueError("Supplier not found")`
-4. Validate new password: `self.validate_password(new_password, email)`
-5. Update: `supplier.password_hash` = hash of new password
-6. Save (triggers `updated_at` update)
-7. Emit Kafka event: topic=`Topic.SUPPLIER`, action=`"password_reset"`
-8. Return `{"message": "Password reset successful"}`
-
-<details>
-<summary><b>Hint Level 1</b> - Direction</summary>
-
-These are almost identical to TASK_01's password reset methods. The only differences: use `Supplier` instead of `User`, use `"supplier_password_reset"` as the token type, and extract `"supplier_id"` from the payload instead of `"user_id"`.
-
-</details>
-
-#### Verify Exercise 5.6
-
-```bash
-# Request reset
-curl -X POST http://localhost:8000/supplier/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{"email": "sales@acme-electronics.com"}'
-
-# Reset (you'd need to capture the token from direct service call)
-curl -X POST http://localhost:8000/supplier/reset-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token": "<paste-reset-token>",
-    "new_password": "NewSecure1Pass!"
-  }'
-
-# Login with new password
-curl -X POST http://localhost:8000/supplier/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "sales@acme-electronics.com",
-    "password": "NewSecure1Pass!"
-  }'
+# Verify in MongoDB shell - document should be GONE
+db.suppliers.findOne({"_id": ObjectId("<supplier-id>")})
+# Returns null (document permanently removed)
 ```
 
 ---
@@ -729,28 +661,28 @@ curl -X POST http://localhost:8000/supplier/login \
 Before moving to the next task, verify:
 
 ### Functional Checks
-- [ ] **Register supplier** - creates document with all embedded objects correctly nested (contact_info, company_info, business_info)
-- [ ] **Cross-collection email check** - email registered as User (TASK_01) is rejected for supplier registration
-- [ ] **Password validation** - rejects passwords without special characters, enforces 10-char minimum
-- [ ] **Login success** - returns supplier data (id, email, company_name)
-- [ ] **Login wrong password** - returns 401 with "Invalid email or password"
-- [ ] **Email verification** - successfully retrieves supplier by ID from token
-- [ ] **Password reset** - changes `password_hash`, old password no longer works
+- [ ] **Create supplier** - creates document with all embedded objects correctly nested (contact_info, company_info, business_info)
+- [ ] **Duplicate email rejected** - same email for two suppliers fails with 409
+- [ ] **Optional fields** - `banking_info: null`, `shipping_address: null` when not provided
+- [ ] **Get supplier** - returns full supplier document by ID
+- [ ] **Get non-existent supplier** - returns 404
+- [ ] **List suppliers** - returns array, respects skip/limit
+- [ ] **Update supplier** - updates fields across `contact_info`, `company_info`, and `business_info`
+- [ ] **Delete supplier** - permanently removes document from collection
 
 ### Database Checks
 - [ ] `db.suppliers.countDocuments()` - correct count
 - [ ] `db.suppliers.getIndexes()` - shows the location compound index
 - [ ] Supplier document has complete `company_info.business_address` nesting (3 levels deep)
 - [ ] Supplier document has `contact_info.contact_person_name` populated
-- [ ] After login: `updated_at` is refreshed
+- [ ] After update: `updated_at` is refreshed
+- [ ] After delete: document is completely gone (not soft-deleted)
 
 ### Code Quality Checks
-- [ ] Cross-collection import: `from shared.models.user import User`
-- [ ] All token types use `"supplier_"` prefix
-- [ ] All payload keys use `"supplier_id"` (not `"user_id"`)
-- [ ] Kafka events use `Topic.SUPPLIER`
-- [ ] Password min length is 10 (not 8)
-- [ ] Password pattern requires `!@#$%^&*`
+- [ ] `DuplicateError` used for email conflicts
+- [ ] `NotFoundError` used for missing suppliers
+- [ ] Kafka events emitted: `SUPPLIER_CREATED`, `SUPPLIER_UPDATED`, `SUPPLIER_DELETED`
+- [ ] All operations use Beanie ODM
 
 ---
 
@@ -792,25 +724,41 @@ This is one of the most important MongoDB index concepts. The field ORDER in a c
 
 </details>
 
-### Challenge B: Supplier vs User - Why Two Collections?
+### Challenge B: Soft Delete vs Hard Delete
 
-The architecture uses separate collections for suppliers and users. Both have email, password, and login flows. Why not put them in the same collection with a `type` field?
+The architecture uses soft delete for Users and hard delete for Suppliers. Think about:
 
-Think about:
-1. What happens to queries when you have mixed documents? (Hint: index selectivity)
-2. What happens to validation when some fields are required for suppliers but don't exist for users?
-3. How does the `product_ids` array on Supplier affect query patterns?
+1. What happens to a supplier's products when the supplier is hard deleted? (They become orphaned - `product.supplier_id` points to a non-existent supplier)
+2. How would you change the design to handle this? (Options: cascade delete products, soft delete supplier instead, or check for products before allowing delete)
+3. What are the trade-offs of each approach?
+
+<details>
+<summary>Answer</summary>
+
+**Cascade delete:** Delete all supplier's products too. Clean but destructive - loses product data.
+
+**Soft delete:** Add `deleted_at` to Supplier like User has. Preserves data but requires filtering in all supplier queries.
+
+**Pre-check:** In `delete_supplier`, check `supplier.product_ids` - if non-empty, reject the delete. Safe but frustrating for users.
+
+The current design prioritizes simplicity. In production, you'd likely use soft delete for suppliers too, or cascade delete their products.
+
+</details>
+
+### Challenge C: Supplier vs User - Why Two Collections?
+
+The architecture uses separate collections for suppliers and users. Both have email, password, and similar patterns. Why not put them in the same collection with a `type` field?
 
 <details>
 <summary>Answer</summary>
 
 **Performance:** A single collection with mixed types means every query needs a `type` filter. With separate collections, each index is specialized.
 
-**Schema flexibility:** MongoDB is schemaless, but Beanie enforces schemas per model. A single collection would need complex conditional validation: "if type=supplier, require company_info". Separate models keep validation clean.
+**Schema flexibility:** Beanie enforces schemas per model. A single collection would need conditional validation. Separate models keep validation clean.
 
-**Operational independence:** Suppliers can be backed up, migrated, or sharded independently. Different read/write patterns can be optimized per collection.
+**Operational independence:** Suppliers can be backed up, migrated, or sharded independently.
 
-**The trade-off:** Cross-collection email uniqueness requires multiple queries (as you implemented in Exercise 5.2). This is the cost of separation.
+**The trade-off:** If you wanted cross-collection email uniqueness, you'd need to check both collections (adding a query to `create_supplier`). The current design only checks within the supplier collection.
 
 </details>
 
@@ -818,16 +766,18 @@ Think about:
 
 ## 8. WHAT'S NEXT
 
-You've now built authentication for both sides of the platform - Users and Suppliers. You understand:
-- Cross-collection querying
+You've now built CRUD operations for both Users and Suppliers. You understand:
 - Complex nested document construction (3 levels deep)
-- Why entities are separated into different collections
+- Multi-level partial updates across nested objects
+- Hard delete vs soft delete trade-offs
+- Compound index behavior (left prefix rule)
 
 **TASK 04: Product Service** will build on these concepts with:
 - Supplier-owned documents (products belong to suppliers via `supplier_id`)
 - Product variants stored as a Dict of embedded objects
 - Multi-location inventory tracking with embedded arrays
-- Product status lifecycle (draft → active → discontinued)
+- Product status lifecycle (DRAFT → ACTIVE → DISCONTINUED / OUT_OF_STOCK)
+- Back-reference management (adding/removing product_ids from supplier.product_ids)
 - Three enums: `ProductStatus`, `ProductCategory`, `UnitType`
 
-The patterns you learned here - find → validate → act → emit - will repeat in every service you build.
+The patterns you learned here - fetch → validate → build → persist → emit - will repeat in every service you build.

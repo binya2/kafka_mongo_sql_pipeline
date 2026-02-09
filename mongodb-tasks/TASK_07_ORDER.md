@@ -1,27 +1,26 @@
-# TASK 07: Order Service - E-Commerce Transactions & Fulfillment
+# TASK 07: Order Service - E-Commerce Transactions & Product Snapshots
 
 ## 1. MISSION BRIEFING
 
-Orders are where the **entire platform converges**. Users browse products, discover what they want, and eventually place an order. An order captures a complete purchase - product snapshots frozen at purchase time, shipping details, per-item fulfillment tracking, and status transitions through the order lifecycle.
+Orders are where the **entire platform converges**. Users browse products, discover what they want, and eventually place an order. An order captures a complete purchase - product snapshots frozen at purchase time, shipping details, per-item pricing, and status tracking.
 
-This is the **most transactional service** you've built. The Order service introduces patterns from real e-commerce: product snapshot denormalization freezes product data at purchase time, per-item fulfillment tracking allows partial shipments, and the 8-status state machine governs the entire order lifecycle.
+This is the **most transactional service** you've built. The Order service introduces patterns from real e-commerce: product snapshot denormalization freezes product data at purchase time, cross-collection validation ensures data integrity, and order number generation provides human-readable identifiers.
 
 ### What You Will Build
-The `OrderService` class - ~10 methods covering order creation with product snapshot denormalization, status management, per-item fulfillment tracking, cursor-based listing, and two different lookup strategies (by ID and by order number).
+The `OrderService` class - 4 methods covering order creation with cross-collection validation and product snapshot denormalization, order retrieval, skip/limit pagination with status filtering, and order cancellation with status guards.
 
 ### What You Will Learn
 
 | MongoDB Concept | Where You'll Use It |
 |----------------|-------------------|
-| **Cross-collection validation chain** | User (exists + active) -> Products (exist + active) |
+| **Cross-collection validation chain** | User (exists + active) -> Products (exist + ACTIVE status) |
 | **Product snapshot denormalization** | Freeze product data at purchase time in `ProductSnapshot` |
-| **Compound `find_one` (anti-enumeration)** | `{_id, customer.user_id}` - orders scoped to owner |
-| **`find_one` on unique field** | `{order_number, customer.user_id}` - lookup by human-readable ID |
-| **Cursor-based pagination with `$lt`** | Descending order list with reverse cursor direction |
-| **`$in` status filter** | Filter orders by multiple statuses |
-| **Nested field queries** | `customer.user_id`, `items.product_snapshot.supplier_id` |
-| **Per-item embedded updates** | Updating `fulfillment_status`, `tracking_number` on individual OrderItems |
-| **Order number generation** | Human-readable unique identifier pattern |
+| **`find_one` by ID** | `Order.get(PydanticObjectId(order_id))` - simple order lookup |
+| **Skip/limit pagination** | `.skip(skip).limit(min(limit, 100))` with sort |
+| **`$in` status filter** | Filter orders by multiple comma-separated statuses |
+| **Nested field queries** | `customer.user_id` for scoping orders to a user |
+| **Order number generation** | Human-readable unique identifier: `ORD-YYYYMMDD-XXXX` |
+| **Status guard on cancel** | Only PENDING or CONFIRMED orders can be cancelled |
 
 ### How This Differs From Previous Tasks
 
@@ -29,11 +28,10 @@ The `OrderService` class - ~10 methods covering order creation with product snap
 |--------|-----------|------------|
 | Embedded doc types | 4 | **4** (OrderCustomer, ProductSnapshot, OrderItem, ShippingAddress) |
 | Collections touched | 2 (posts + users) | **3** (orders + users + products) |
-| Cursor pagination | `published_at` + `_id` tiebreaker | **`_id` only** with descending `$lt` |
+| Pagination | Skip/limit | **Skip/limit** with status filter |
 | Denormalized data | PostAuthor from User | **OrderCustomer** from User + **ProductSnapshot** from Product |
-| State machine | None (soft delete only) | **8 statuses** (pending -> confirmed -> shipped -> delivered) |
-| Lookup methods | By ID only | **By ID AND by order number** |
-| Per-item tracking | N/A | **FulfillmentStatus** per OrderItem |
+| Delete pattern | Soft delete (`deleted_at`) | **Status-based** (no `deleted_at` field) |
+| Utility functions | `build_post_author()` | **3 functions**: `build_order_customer()`, `build_order_item()`, `generate_order_number()` |
 
 ---
 
@@ -42,27 +40,27 @@ The `OrderService` class - ~10 methods covering order creation with product snap
 ### Prerequisites
 - **TASK_01 (User) must be complete** - Orders require a customer (User)
 - **TASK_04 (Product) must be complete** - Orders reference products with variant info
-- Have at least one active user and one active product
+- Have at least one active user and one ACTIVE product
 
 ### Files You MUST Read Before Coding
 
 | Order | File | Why |
 |-------|------|-----|
-| 1 | `shared/models/order.py` | 190 lines - 4 enums, 4 embedded types, 3 indexes |
-| 2 | `apps/backend-service/src/schemas/order.py` | Request/response schemas |
-| 3 | `apps/backend-service/src/routes/order.py` | Endpoints your service must support |
-| 4 | `apps/backend-service/src/utils/order_utils.py` | Response builders, header extraction |
-| 5 | `shared/models/product.py` | Product model - you'll read variant data for snapshots |
-| 6 | `shared/models/user.py` | User model - you'll build `OrderCustomer` from User |
+| 1 | `shared/models/order.py` | 191 lines - 4 enums, 4 embedded types, 4 indexes |
+| 2 | `apps/mongo_backend/schemas/order.py` | Request/response schemas - `CreateOrderRequest`, `CancelOrderRequest` |
+| 3 | `apps/mongo_backend/routes/order.py` | 4 endpoints your service must support |
+| 4 | `apps/mongo_backend/utils/order_utils.py` | Utility functions: `order_response()`, `get_order_or_404()`, `generate_order_number()`, `build_order_customer()`, `build_product_snapshot()`, `build_order_item()` |
+| 5 | `shared/models/product.py` | Product model - you'll validate products and read variant data |
+| 6 | `shared/models/user.py` | User model - utility builds `OrderCustomer` from User |
 
 ### The Data Flow
 
 ```
-HTTP Request (User JWT)
+HTTP Request (X-User-ID header)
     |
     v
 +-----------+   Extracts user_id from X-User-ID header
-|  Route    |
+|  Route    |   Parses CreateOrderRequest / CancelOrderRequest body
 |           |
 |  Calls    |
 |  your     |
@@ -72,48 +70,23 @@ HTTP Request (User JWT)
 +--------------------------------------------------------------+
 |               OrderService (YOU WRITE THIS)                   |
 |                                                               |
-|  Reads from THREE collections:                                |
-|    1. Order      (main CRUD + lifecycle)                      |
-|    2. User       (customer info for denormalization)           |
-|    3. Product    (validation, pricing, snapshots)              |
+|  Uses UTILITY FUNCTIONS from utils/order_utils.py:            |
+|    - build_order_customer(user_id)  -> OrderCustomer          |
+|    - build_order_item(i, product, variant_name, qty)          |
+|    - generate_order_number()  -> "ORD-YYYYMMDD-XXXX"          |
 |                                                               |
-|  Writes to ONE collection:                                    |
-|    1. Order      (insert, status updates, fulfillment)        |
+|  Reads from THREE collections:                                |
+|    1. Order      (main CRUD)                                  |
+|    2. User       (via build_order_customer utility)            |
+|    3. Product    (validation + snapshot in build_order_item)   |
 |                                                               |
 |  Returns Order documents                                      |
 +--------------------------------------------------------------+
     |
     v
-+-----------+   Route transforms Order -> response schemas
-|  Route    |   using utils/order_utils.py
++-----------+   Route transforms Order -> JSON
+|  Route    |   using order_response() from utils
 +-----------+
-```
-
-### The 8-Status Order Lifecycle
-
-```
-                    confirm_order()
-    PENDING --------------------------> CONFIRMED
-       |                                    |
-       |  cancel_order()                    |  start_processing()
-       |                                    v
-       +-----------> CANCELLED          PROCESSING
-                       ^                    |
-                       |                    |  mark_shipped()
-                       |                    v
-                       +------------     SHIPPED
-                       |                    |
-                       |                    |  mark_delivered()
-                       |                    v
-                       |               DELIVERED
-                       |
-                       +-- cancel_order() (if not shipped)
-
-    Payment fails:
-    PENDING -----------------------------> FAILED
-
-    After delivery (or anytime after payment):
-    ANY paid -----------------------------> REFUNDED
 ```
 
 ### The 4 Enums
@@ -125,7 +98,7 @@ FulfillmentStatus: pending | processing | shipped | delivered | cancelled | retu
 PaymentMethod:     credit_card | debit_card | paypal | apple_pay | google_pay | bank_transfer | cash_on_delivery
 ```
 
-> **Note**: `PaymentStatus`, `FulfillmentStatus`, and `PaymentMethod` enums are defined in the model. `FulfillmentStatus` is used per-item on `OrderItem`. `PaymentStatus` and `PaymentMethod` are available for future payment integration but are not used in any document field currently.
+> **Note**: `PaymentStatus`, `FulfillmentStatus`, and `PaymentMethod` enums are defined in the model. `FulfillmentStatus` is used per-item on `OrderItem` (defaults to PENDING). `PaymentStatus` and `PaymentMethod` are available for future payment integration but are not directly set in the current service.
 
 ---
 
@@ -190,18 +163,21 @@ class OrderItem(BaseModel):
     total_cents: int                      # Grand total for this item
 ```
 
-### Index Analysis (3 indexes)
+### Index Analysis (4 indexes)
 
 ```python
 indexes = [
-    # 1. Customer's orders (list_user_orders query)
+    # 1. Unique order number
+    [("order_number", 1)],
+
+    # 2. Customer's orders (list_orders query)
     [("customer.user_id", 1), ("created_at", -1)],
     # -> Nested field query into denormalized customer!
 
-    # 2. Status filtering
+    # 3. Status filtering
     [("status", 1), ("created_at", -1)],
 
-    # 3. Date range queries
+    # 4. Date range queries
     [("created_at", -1)],
 ]
 ```
@@ -216,6 +192,7 @@ indexes = [
 | **Per-item fulfillment** | Each `OrderItem` has its own `fulfillment_status` |
 | **Product snapshot** | Product data is frozen at purchase time - price changes don't affect existing orders |
 | **Denormalized customer** | `OrderCustomer` captures user data at order time |
+| **Order number index** | `order_number` has its own index for fast lookups |
 
 ### Understanding ProductSnapshot
 
@@ -232,39 +209,47 @@ This is why `ProductSnapshot` copies `product_name`, `supplier_name`, `image_url
 
 ## 4. SERVICE CONTRACT
 
-Your service file: `apps/backend-service/src/services/order.py`
+Your service file: `apps/mongo_backend/services/order.py`
 
 ### Class Setup
 
 ```python
-from shared.models.order import (
-    Order, OrderStatus, FulfillmentStatus,
-    OrderCustomer, ProductSnapshot, OrderItem, ShippingAddress
-)
+from shared.models.order import Order, OrderStatus, ShippingAddress
 from shared.models.product import Product, ProductStatus
 from shared.models.user import User
+from shared.errors import NotFoundError, ValidationError
+from utils.datetime_utils import utc_now
+from utils.order_utils import generate_order_number, build_order_customer, build_order_item
+from kafka.producer import get_kafka_producer
+from shared.kafka.topics import EventType
+from utils.serialization import oid_to_str
 
 class OrderService:
-    def __init__(self, kafka_service=None):
-        self._kafka = kafka_service
-        self.default_page_size = 20
-        self.max_page_size = 100
+    def __init__(self):
+        self._kafka = get_kafka_producer()
 ```
 
 ### Method Overview
 
 | # | Method | MongoDB Concepts | Difficulty |
 |---|--------|-----------------|-----------|
-| 1 | `_generate_order_number()` | Pure Python | Easy |
-| 2 | `_get_user_order(order_id, user_id)` | Compound `find_one` (anti-enumeration) | Medium |
-| 3 | `_build_customer(user)` | Denormalized snapshot from User | Easy |
-| 4 | `_build_product_snapshot(product, variant_name)` | Denormalized snapshot from Product | Easy |
-| 5 | `create_order(...)` | Cross-collection validation + insert | **Hard** |
-| 6 | `get_order(order_id, user_id)` | Delegates to `_get_user_order` | Easy |
-| 7 | `get_order_by_number(order_number, user_id)` | `find_one` on unique field + ownership | Medium |
-| 8 | `list_user_orders(...)` | Cursor pagination with `$lt` + `$in` filter | **Hard** |
-| 9 | `update_order_status(order_id, new_status)` | Status transition validation | Medium |
-| 10 | `cancel_order(order_id, user_id)` | Status guard + item fulfillment update | Medium |
+| 1 | `create_order(user_id, body)` | Cross-collection validation + insert | **Hard** |
+| 2 | `get_order(order_id)` | Simple `Order.get()` by ID | Easy |
+| 3 | `list_orders(user_id, skip, limit, status_filter)` | Skip/limit pagination + `$in` filter | Medium |
+| 4 | `cancel_order(order_id, reason)` | Status guard + save | Medium |
+
+### Utility Functions (in `utils/order_utils.py`)
+
+These utility functions are **already provided** - you call them from your service:
+
+| Function | What It Does |
+|----------|-------------|
+| `generate_order_number()` | Returns `"ORD-YYYYMMDD-XXXX"` using `secrets.token_hex(2)` |
+| `build_order_customer(user_id)` | Fetches User, returns `OrderCustomer` snapshot. Raises `NotFoundError` if user not found or deleted |
+| `build_product_snapshot(product, variant_name)` | Builds `ProductSnapshot` from Product + variant |
+| `build_order_item(index, product, variant_name, quantity)` | Builds `OrderItem` with pricing: uses `variant.price_cents` if variant specified, else `product.base_price_cents` |
+| `order_response(order)` | Converts Order to JSON dict with `id` field |
+| `get_order_or_404(order_id)` | Fetches order or raises `NotFoundError` |
 
 ---
 
@@ -272,147 +257,22 @@ class OrderService:
 
 ---
 
-### Exercise 5.1: Helper Methods - Order Foundations
+### Exercise 5.1: Understanding the Utility Functions
 
-**Concept**: Order number generation, compound `find_one` (anti-enumeration), denormalized snapshots
+**Concept**: Before writing the service, understand how the utility functions work.
 
-#### 5.1a: `_generate_order_number`
+Read `apps/mongo_backend/utils/order_utils.py` and answer these questions:
 
-```python
-def _generate_order_number(self) -> str:
-```
-**What it does**: Generate a human-readable order number like `ORD-20250203-A1B2`.
-
-```python
-import secrets
-
-date_part = utc_now().strftime("%Y%m%d")
-random_part = secrets.token_hex(2).upper()  # 4 hex chars
-return f"ORD-{date_part}-{random_part}"
-```
-
-> **Note**: This is NOT guaranteed unique (4 hex chars = 65,536 combinations per day). In production, you'd catch duplicate key errors and retry with a new random part.
-
----
-
-#### 5.1b: `_get_user_order` (Anti-Enumeration)
-
-```python
-async def _get_user_order(self, order_id: str, user_id: str) -> Order:
-```
-**What it does**: Fetch an order scoped to the requesting user. Same anti-enumeration pattern from previous tasks.
-
-**The compound query:**
-```python
-order = await Order.find_one({
-    "_id": PydanticObjectId(order_id),
-    "customer.user_id": PydanticObjectId(user_id)
-})
-```
-
-Both conditions must match. If the order exists but belongs to a different user, the result is `None` - indistinguishable from "doesn't exist". This prevents attackers from discovering which order IDs exist.
-
-**Steps**:
-1. Wrap the `find_one` in try/except for invalid ObjectIds
-2. If `order` is None, raise `ValueError("Order not found")`
-3. Return the order
-
-> **Index used**: `[("customer.user_id", 1), ("created_at", -1)]` - partially covers this query.
+1. **`generate_order_number()`** - What format does it produce? How many unique values per day?
+2. **`build_order_customer(user_id)`** - What fields does it copy from the User? What errors can it raise?
+3. **`build_order_item(index, product, variant_name, quantity)`** - How does it determine the unit price? What does it use as the `item_id`?
 
 <details>
-<summary>Full Implementation</summary>
+<summary>Answers</summary>
 
-```python
-async def _get_user_order(self, order_id: str, user_id: str) -> Order:
-    try:
-        order = await Order.find_one({
-            "_id": PydanticObjectId(order_id),
-            "customer.user_id": PydanticObjectId(user_id)
-        })
-    except Exception:
-        raise ValueError("Invalid order or user ID")
-
-    if not order:
-        raise ValueError("Order not found")
-
-    return order
-```
-</details>
-
----
-
-#### 5.1c: `_build_customer` (Denormalized Customer Snapshot)
-
-```python
-def _build_customer(self, user: User) -> OrderCustomer:
-```
-
-Build an `OrderCustomer` from a User document. This captures the user's information at order time.
-
-```python
-def _build_customer(self, user: User) -> OrderCustomer:
-    return OrderCustomer(
-        user_id=user.id,
-        display_name=user.profile.display_name,
-        email=user.contact_info.primary_email,
-        phone=user.contact_info.phone
-    )
-```
-
----
-
-#### 5.1d: `_build_product_snapshot` (Frozen Product Data)
-
-```python
-def _build_product_snapshot(
-    self, product: Product, variant_name: Optional[str] = None
-) -> ProductSnapshot:
-```
-
-Build a `ProductSnapshot` from a Product document and optional variant name.
-
-**Steps**:
-1. Start with base product data: `product.name`, `product.supplier_id`, image from first variant or default
-2. If `variant_name` specified: Look up the variant in `product.variants` (it's a `Dict[str, ProductVariant]`)
-3. Copy `variant_name`, `variant_attributes` (list of VariantAttribute -> dict), and variant's `image_url`
-4. Include `supplier_name` from `product.supplier_info.get("name", "Unknown Supplier")`
-5. Return `ProductSnapshot`
-
-<details>
-<summary>Full Implementation</summary>
-
-```python
-def _build_product_snapshot(
-    self, product: Product, variant_name: Optional[str] = None
-) -> ProductSnapshot:
-    image_url = "https://example.com/default-product.jpg"
-    variant_attrs = {}
-    v_name = variant_name
-
-    if variant_name and variant_name in product.variants:
-        variant = product.variants[variant_name]
-        if variant.image_url:
-            image_url = variant.image_url
-        variant_attrs = {
-            attr.attribute_name: attr.attribute_value
-            for attr in variant.attributes
-        }
-    elif product.variants:
-        # Use first variant's image as default
-        first_variant = next(iter(product.variants.values()))
-        if first_variant.image_url:
-            image_url = first_variant.image_url
-
-    return ProductSnapshot(
-        product_id=product.id,
-        supplier_id=product.supplier_id,
-        product_name=product.name,
-        variant_name=v_name,
-        variant_attributes=variant_attrs,
-        image_url=image_url,
-        supplier_name=product.supplier_info.get("name", "Unknown Supplier")
-    )
-```
+1. Format: `ORD-YYYYMMDD-XXXX` where XXXX is `secrets.token_hex(2).upper()` (4 hex chars = 65,536 combinations per day)
+2. Copies: `user.id`, `user.profile.display_name`, `user.contact_info.primary_email`, `user.contact_info.phone`. Raises `ValidationError` for invalid ID, `NotFoundError` if user not found or `user.deleted_at` is set
+3. If `variant_name` is in `product.variants`, uses `product.variants[variant_name].price_cents`. Otherwise uses `product.base_price_cents`. The `item_id` is `f"item_{index + 1}"`
 </details>
 
 ---
@@ -424,630 +284,434 @@ def _build_product_snapshot(
 #### The Method Signature
 
 ```python
-async def create_order(
-    self,
-    user_id: str,
-    items_data: List[Dict],
-    shipping_address_data: Dict
-) -> Order:
+async def create_order(self, user_id: str, body) -> Order:
+    """Create a new order. `body` is a CreateOrderRequest."""
 ```
+
+The `body` parameter is a `CreateOrderRequest` (from `schemas/order.py`) with these fields:
+- `body.items` - `List[OrderItemRequest]`, each with `.product_id`, `.variant_name`, `.quantity`
+- `body.shipping_address` - `ShippingAddressRequest` with `.recipient_name`, `.phone`, `.street_address_1`, etc.
+- `body.payment_info` - `PaymentInfoRequest` (not used by the service currently)
 
 #### Step-by-Step Algorithm
 
 ```
-1. Validate user exists (cross-collection)
-   +-- user = await User.get(PydanticObjectId(user_id))
-   +-- Check user exists and user.deleted_at is None
+1. Build customer snapshot (cross-collection)
+   +-- customer = await build_order_customer(user_id)
+   +-- This utility fetches the User, checks deleted_at, builds OrderCustomer
 
 2. Validate and build each order item:
-   For each item in items_data:
-   +-- Fetch product: await Product.get(product_id)
-   +-- Check product exists and status is ACTIVE
-   +-- If variant_name provided, verify variant exists in product.variants
-   +-- Determine unit_price: variant.price_cents or product.base_price_cents
-   +-- Build ProductSnapshot
-   +-- Build OrderItem with pricing
+   For each item_req in body.items:
+   +-- Fetch product: await Product.get(PydanticObjectId(item_req.product_id))
+   +-- Check product exists
+   +-- Check product.status == ProductStatus.ACTIVE
+   +-- Call build_order_item(i, product, item_req.variant_name, item_req.quantity)
 
-3. Build shipping address from request data
+3. Build ShippingAddress from body.shipping_address
 
 4. Build the Order document:
-   +-- order_number = self._generate_order_number()
-   +-- customer = self._build_customer(user)
-   +-- status = OrderStatus.PENDING
+   +-- order_number = generate_order_number()
+   +-- customer = customer (from step 1)
+   +-- items = items (from step 2)
+   +-- shipping_address = shipping_address (from step 3)
 
 5. await order.insert()
 
-6. Emit Kafka event (order.created)
+6. Emit Kafka event: EventType.ORDER_CREATED
 
 7. Return order
 ```
 
+#### Error Handling
+
+| Condition | Error Type | Message |
+|-----------|-----------|---------|
+| Product fetch fails (invalid ID) | `NotFoundError` | `"Product not found: {product_id}"` |
+| Product is None or status != ACTIVE | `ValidationError` | `"Product not available: {product_id}"` |
+| User not found / deleted | Raised by `build_order_customer()` | `NotFoundError` / `ValidationError` |
+
 #### Building OrderItems
 
 ```python
-order_items = []
-for i, item_data in enumerate(items_data):
-    product_id = item_data["product_id"]
-    variant_name = item_data.get("variant_name")
-    quantity = item_data.get("quantity", 1)
-
-    # Validate product
+items = []
+for i, item_req in enumerate(body.items):
     try:
-        product = await Product.get(PydanticObjectId(product_id))
+        product = await Product.get(PydanticObjectId(item_req.product_id))
     except Exception:
-        raise ValueError(f"Invalid product ID: {product_id}")
-
+        raise NotFoundError(f"Product not found: {item_req.product_id}")
     if not product or product.status != ProductStatus.ACTIVE:
-        raise ValueError(f"Product not available: {product_id}")
+        raise ValidationError(f"Product not available: {item_req.product_id}")
 
-    # Determine price
-    unit_price = product.base_price_cents
-    if variant_name:
-        if variant_name not in product.variants:
-            raise ValueError(f"Variant '{variant_name}' not found for product '{product.name}'")
-        variant = product.variants[variant_name]
-        unit_price = variant.price_cents
-
-    # Build snapshot and item
-    snapshot = self._build_product_snapshot(product, variant_name)
-    total = unit_price * quantity
-
-    order_items.append(OrderItem(
-        item_id=f"item_{i + 1}",
-        product_snapshot=snapshot,
-        quantity=quantity,
-        unit_price_cents=unit_price,
-        final_price_cents=unit_price,  # No discount logic for now
-        total_cents=total,
-    ))
+    items.append(build_order_item(i, product, item_req.variant_name, item_req.quantity))
 ```
 
-> **Think about it**: Why do we use `product.base_price_cents` as the default and only override with `variant.price_cents` when a variant is selected? Because some products have no variants - they just have a base price. The variant price takes precedence when specified.
+> **Think about it**: Why do we validate `product.status != ProductStatus.ACTIVE` rather than just `not product`? Because a product might exist but be in DRAFT, DISCONTINUED, or DELETED status. Only ACTIVE products can be ordered.
 
-> **Hint Level 1**: Follow the algorithm. The key insight is building the `ProductSnapshot` from the Product document before inserting. The snapshot freezes the product data so price changes don't affect existing orders.
-
-<details>
-<summary>Full Implementation</summary>
+#### Building ShippingAddress
 
 ```python
-async def create_order(
-    self, user_id: str, items_data: List[Dict], shipping_address_data: Dict
-) -> Order:
-    # 1. Validate user
-    try:
-        user = await User.get(PydanticObjectId(user_id))
-    except Exception:
-        raise ValueError("Invalid user ID")
-    if not user or user.deleted_at:
-        raise ValueError("User not found")
+addr = body.shipping_address
+shipping_address = ShippingAddress(
+    recipient_name=addr.recipient_name,
+    phone=addr.phone,
+    street_address_1=addr.street_address_1,
+    street_address_2=addr.street_address_2,
+    city=addr.city,
+    state=addr.state,
+    zip_code=addr.zip_code,
+    country=addr.country,
+)
+```
 
-    # 2. Validate and build items
-    if not items_data:
-        raise ValueError("Order must have at least one item")
+#### Kafka Event
 
-    order_items = []
-    for i, item_data in enumerate(items_data):
-        product_id = item_data.get("product_id")
-        variant_name = item_data.get("variant_name")
-        quantity = item_data.get("quantity", 1)
+```python
+self._kafka.emit(
+    event_type=EventType.ORDER_CREATED,
+    entity_id=oid_to_str(order.id),
+    data=order.model_dump(mode="json"),
+)
+```
 
-        if quantity < 1:
-            raise ValueError("Quantity must be at least 1")
+> **Hint Level 1**: The service orchestrates utility functions. `build_order_customer()` handles user lookup and snapshot creation. `build_order_item()` handles pricing and snapshot building. You just need to validate products and wire everything together.
 
+> **Hint Level 2**: Loop through `body.items` with `enumerate()`. For each item, fetch the product, validate it's ACTIVE, then call `build_order_item(i, product, item_req.variant_name, item_req.quantity)`.
+
+<details>
+<summary>Hint Level 3 - Full Implementation</summary>
+
+```python
+async def create_order(self, user_id: str, body) -> Order:
+    customer = await build_order_customer(user_id)
+
+    items = []
+    for i, item_req in enumerate(body.items):
         try:
-            product = await Product.get(PydanticObjectId(product_id))
+            product = await Product.get(PydanticObjectId(item_req.product_id))
         except Exception:
-            raise ValueError(f"Invalid product ID: {product_id}")
-
+            raise NotFoundError(f"Product not found: {item_req.product_id}")
         if not product or product.status != ProductStatus.ACTIVE:
-            raise ValueError(f"Product not available: {product_id}")
+            raise ValidationError(f"Product not available: {item_req.product_id}")
 
-        unit_price = product.base_price_cents
-        if variant_name:
-            if variant_name not in product.variants:
-                raise ValueError(
-                    f"Variant '{variant_name}' not found for product '{product.name}'"
-                )
-            unit_price = product.variants[variant_name].price_cents
+        items.append(build_order_item(i, product, item_req.variant_name, item_req.quantity))
 
-        snapshot = self._build_product_snapshot(product, variant_name)
-        total = unit_price * quantity
-
-        order_items.append(OrderItem(
-            item_id=f"item_{i + 1}",
-            product_snapshot=snapshot,
-            quantity=quantity,
-            unit_price_cents=unit_price,
-            final_price_cents=unit_price,
-            total_cents=total,
-        ))
-
-    # 3. Build shipping address
+    addr = body.shipping_address
     shipping_address = ShippingAddress(
-        recipient_name=shipping_address_data["recipient_name"],
-        phone=shipping_address_data.get("phone"),
-        street_address_1=shipping_address_data["street_address_1"],
-        street_address_2=shipping_address_data.get("street_address_2"),
-        city=shipping_address_data["city"],
-        state=shipping_address_data["state"],
-        zip_code=shipping_address_data["zip_code"],
-        country=shipping_address_data["country"],
+        recipient_name=addr.recipient_name,
+        phone=addr.phone,
+        street_address_1=addr.street_address_1,
+        street_address_2=addr.street_address_2,
+        city=addr.city,
+        state=addr.state,
+        zip_code=addr.zip_code,
+        country=addr.country,
     )
 
-    # 4. Build and insert order
     order = Order(
-        order_number=self._generate_order_number(),
-        customer=self._build_customer(user),
-        items=order_items,
+        order_number=generate_order_number(),
+        customer=customer,
+        items=items,
         shipping_address=shipping_address,
-        status=OrderStatus.PENDING,
     )
-
     await order.insert()
 
-    # 5. Emit Kafka event
-    if self._kafka:
-        self._kafka.emit(
-            topic=Topic.ORDER,
-            action="created",
-            entity_id=oid_to_str(order.id),
-            data=order.model_dump(mode="json"),
-        )
-
+    self._kafka.emit(
+        event_type=EventType.ORDER_CREATED,
+        entity_id=oid_to_str(order.id),
+        data=order.model_dump(mode="json"),
+    )
     return order
 ```
 </details>
 
+#### Verify
+
+```bash
+# First, get a valid user ID and an ACTIVE product ID from your database
+
+# Create an order
+curl -s -X POST http://localhost:8000/orders \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: <user_id>" \
+  -d '{
+    "items": [
+      {
+        "product_id": "<product_id>",
+        "variant_name": "Default",
+        "quantity": 2
+      }
+    ],
+    "shipping_address": {
+      "recipient_name": "John Doe",
+      "phone": "+1234567890",
+      "street_address_1": "123 Main St",
+      "city": "New York",
+      "state": "NY",
+      "zip_code": "10001",
+      "country": "US"
+    },
+    "payment_info": {
+      "payment_method": "credit_card",
+      "payment_provider": "stripe"
+    }
+  }' | python3 -m json.tool
+```
+
+**Expected**: Status 201, order with `status: "pending"`, `order_number` like `"ORD-XXXXXXXX-XXXX"`, items with `ProductSnapshot` data frozen from the product.
+
 ---
 
-### Exercise 5.3: List User Orders (Descending Cursor Pagination)
+### Exercise 5.3: Get Order - Simple ID Lookup
 
-**Concept**: Cursor pagination with `$lt` (descending direction), `$in` status filter, nested field query
+**Concept**: Fetch a single document by `_id` using Beanie's `Order.get()`
 
 #### The Method Signature
 
 ```python
-async def list_user_orders(
-    self,
-    user_id: str,
-    cursor: Optional[str] = None,
-    limit: int = 20,
-    status_filter: Optional[List[str]] = None
-) -> Tuple[List[Order], bool]:
-```
-
-#### Descending Cursor Direction
-
-**This cursor goes BACKWARDS (newest first):**
-
-```python
-query = {"customer.user_id": PydanticObjectId(user_id)}
-
-if cursor:
-    query["_id"] = {"$lt": PydanticObjectId(cursor)}  # $lt, not $gt!
-
-orders = await Order.find(query).sort(
-    [("created_at", -1)]
-).limit(limit + 1).to_list()
-```
-
-**Why `$lt` instead of `$gt`?** The sort is `-created_at` (descending - newest first). ObjectIds are monotonically increasing, so the "next page" has SMALLER (older) IDs. The cursor points to the last item on the current page, and we want items with IDs LESS THAN that.
-
-| Sort Direction | Cursor Operator | Meaning |
-|----------------|-----------------|---------|
-| Ascending | `$gt` | "Give me items AFTER this cursor" |
-| **Descending** | **`$lt`** | **"Give me items BEFORE this cursor"** |
-
-> **Contrast with TASK_05**: Post feeds used a `published_at` + `_id` tiebreaker with base64 cursors. Order lists use simple `_id` cursors with `$lt` because we sort by `created_at` descending, and ObjectIds are inherently time-ordered.
-
-#### The `$in` Status Filter
-
-```python
-if status_filter:
-    query["status"] = {"$in": status_filter}
-```
-
-This lets the client request only specific statuses, e.g., `["pending", "confirmed"]` to show "active" orders, or `["delivered", "cancelled"]` to show "completed" orders.
-
-> **Index used**: `[("status", 1), ("created_at", -1)]` - index #2 supports status-filtered queries.
-
-> **Hint Level 1**: Build base query with `customer.user_id`. Add `$in` for status filter if provided. Add `$lt` for cursor if provided. Sort descending. Use the fetch+has-more pattern.
-
-<details>
-<summary>Full Implementation</summary>
-
-```python
-async def list_user_orders(
-    self, user_id: str, cursor=None, limit=20, status_filter=None
-) -> Tuple[List[Order], bool]:
-    try:
-        uid = PydanticObjectId(user_id)
-    except Exception:
-        raise ValueError("Invalid user ID")
-
-    query = {"customer.user_id": uid}
-
-    if status_filter:
-        query["status"] = {"$in": status_filter}
-
-    if cursor:
-        try:
-            query["_id"] = {"$lt": PydanticObjectId(cursor)}
-        except Exception:
-            pass  # Invalid cursor, ignore
-
-    limit = min(limit, self.max_page_size)
-    orders = await Order.find(query).sort(
-        [("created_at", -1)]
-    ).limit(limit + 1).to_list()
-
-    has_more = len(orders) > limit
-    if has_more:
-        orders = orders[:limit]
-
-    return orders, has_more
-```
-</details>
-
----
-
-### Exercise 5.4: Get Order - Two Lookup Strategies
-
-**Concept**: Lookup by internal `_id` vs. human-readable `order_number`, both with ownership scoping
-
-#### 5.4a: `get_order` (By ID)
-
-```python
-async def get_order(self, order_id: str, user_id: str) -> Order:
-    return await self._get_user_order(order_id, user_id)
-```
-
-That's it! Delegates to the helper. The route uses this method name for API clarity.
-
----
-
-#### 5.4b: `get_order_by_number` (By Human-Readable Number)
-
-```python
-async def get_order_by_number(self, order_number: str, user_id: str) -> Order:
-```
-
-**The query:**
-```python
-order = await Order.find_one({
-    "order_number": order_number.strip().upper(),
-    "customer.user_id": PydanticObjectId(user_id)
-})
-```
-
-**Why `.upper()`?** Order numbers are stored as uppercase (e.g., `"ORD-20250203-A1B2"`). If the user types `"ord-20250203-a1b2"`, we need to normalize to match.
-
-> **Two lookup strategies**: `get_order` uses the internal `_id` (machine-friendly, in URLs). `get_order_by_number` uses the human-readable `order_number` (shown on receipts, in customer emails). Both include `customer.user_id` for anti-enumeration.
-
-<details>
-<summary>Full Implementation</summary>
-
-```python
-async def get_order_by_number(self, order_number: str, user_id: str) -> Order:
-    try:
-        uid = PydanticObjectId(user_id)
-    except Exception:
-        raise ValueError("Invalid user ID")
-
-    order = await Order.find_one({
-        "order_number": order_number.strip().upper(),
-        "customer.user_id": uid
-    })
-
-    if not order:
-        raise ValueError("Order not found")
-
-    return order
-```
-</details>
-
----
-
-### Exercise 5.5: Update Order Status
-
-**Concept**: Status transition validation, state machine enforcement
-
-#### The Method Signature
-
-```python
-async def update_order_status(
-    self,
-    order_id: str,
-    user_id: str,
-    new_status: str
-) -> Order:
-```
-
-#### Valid Status Transitions
-
-Not every status change is allowed. Define the valid transitions:
-
-```python
-VALID_TRANSITIONS = {
-    OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED, OrderStatus.FAILED},
-    OrderStatus.CONFIRMED: {OrderStatus.PROCESSING, OrderStatus.CANCELLED},
-    OrderStatus.PROCESSING: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
-    OrderStatus.SHIPPED: {OrderStatus.DELIVERED},
-    OrderStatus.DELIVERED: {OrderStatus.REFUNDED},
-    OrderStatus.CANCELLED: set(),      # Terminal state
-    OrderStatus.REFUNDED: set(),       # Terminal state
-    OrderStatus.FAILED: set(),         # Terminal state
-}
-```
-
-> **Why enforce transitions?** Without validation, a bug could move an order from DELIVERED back to PENDING. The transition map ensures the state machine is always followed.
-
-**Algorithm**:
-1. Get order with ownership check
-2. Validate `new_status` is a valid `OrderStatus` enum value
-3. Check the transition is allowed: `new_status in VALID_TRANSITIONS[order.status]`
-4. Update `order.status = new_status`
-5. Save
-
-<details>
-<summary>Full Implementation</summary>
-
-```python
-VALID_TRANSITIONS = {
-    OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED, OrderStatus.FAILED},
-    OrderStatus.CONFIRMED: {OrderStatus.PROCESSING, OrderStatus.CANCELLED},
-    OrderStatus.PROCESSING: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
-    OrderStatus.SHIPPED: {OrderStatus.DELIVERED},
-    OrderStatus.DELIVERED: {OrderStatus.REFUNDED},
-    OrderStatus.CANCELLED: set(),
-    OrderStatus.REFUNDED: set(),
-    OrderStatus.FAILED: set(),
-}
-
-async def update_order_status(
-    self, order_id: str, user_id: str, new_status: str
-) -> Order:
-    order = await self._get_user_order(order_id, user_id)
-
-    try:
-        status_enum = OrderStatus(new_status)
-    except ValueError:
-        raise ValueError(f"Invalid order status: {new_status}")
-
-    allowed = self.VALID_TRANSITIONS.get(order.status, set())
-    if status_enum not in allowed:
-        raise ValueError(
-            f"Cannot transition from '{order.status.value}' to '{new_status}'"
-        )
-
-    order.status = status_enum
-    await order.save()
-
-    if self._kafka:
-        self._kafka.emit(
-            topic=Topic.ORDER,
-            action="status_updated",
-            entity_id=oid_to_str(order.id),
-            data={
-                "order_number": order.order_number,
-                "old_status": order.status.value,
-                "new_status": new_status,
-                "customer_id": oid_to_str(order.customer.user_id),
-            },
-        )
-
-    return order
-```
-</details>
-
----
-
-### Exercise 5.6: Cancel Order
-
-**Concept**: Status guard, per-item fulfillment status update
-
-#### The Method Signature
-
-```python
-async def cancel_order(self, order_id: str, user_id: str) -> Order:
+async def get_order(self, order_id: str) -> Order:
 ```
 
 #### Algorithm
 
 ```
-1. Get order with ownership check
-2. Guard: only PENDING, CONFIRMED, or PROCESSING can be cancelled
-3. Update order status to CANCELLED
-4. Update each item's fulfillment_status to CANCELLED
-5. Save
-6. Emit Kafka event
+1. Try to fetch: Order.get(PydanticObjectId(order_id))
+2. Wrap in try/except for invalid ObjectId strings
+3. If order is None, raise NotFoundError
+4. Return the order
 ```
 
-**Cancelling per-item fulfillment:**
-```python
-for item in order.items:
-    if item.fulfillment_status not in (
-        FulfillmentStatus.SHIPPED, FulfillmentStatus.DELIVERED
-    ):
-        item.fulfillment_status = FulfillmentStatus.CANCELLED
-```
+> **Note**: Unlike the old pattern, `get_order` does NOT take a `user_id` parameter. There is no ownership/anti-enumeration check. The route for listing orders uses `X-User-ID` to scope, but the individual get endpoint does not.
 
-> **Why check each item's fulfillment status?** In a partially-shipped order, some items may already be SHIPPED or DELIVERED. Those items can't be cancelled - only the unshipped ones change to CANCELLED.
+> **Hint Level 1**: This is the simplest method. It's nearly identical to `get_post()` and `get_product()` from previous tasks.
+
+> **Hint Level 2**: Use `PydanticObjectId(order_id)` to convert the string, catch any exception, raise `NotFoundError("Order not found")`.
 
 <details>
-<summary>Full Implementation</summary>
+<summary>Hint Level 3 - Full Implementation</summary>
 
 ```python
-async def cancel_order(self, order_id: str, user_id: str) -> Order:
-    order = await self._get_user_order(order_id, user_id)
-
-    cancellable = {OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.PROCESSING}
-    if order.status not in cancellable:
-        raise ValueError(
-            f"Cannot cancel order in '{order.status.value}' status"
-        )
-
-    order.status = OrderStatus.CANCELLED
-
-    for item in order.items:
-        if item.fulfillment_status not in (
-            FulfillmentStatus.SHIPPED, FulfillmentStatus.DELIVERED
-        ):
-            item.fulfillment_status = FulfillmentStatus.CANCELLED
-
-    await order.save()
-
-    if self._kafka:
-        self._kafka.emit(
-            topic=Topic.ORDER,
-            action="cancelled",
-            entity_id=oid_to_str(order.id),
-            data={
-                "order_number": order.order_number,
-                "customer_id": oid_to_str(order.customer.user_id),
-            },
-        )
-
-    return order
-```
-</details>
-
----
-
-### Exercise 5.7: Update Item Fulfillment (Per-Item Tracking)
-
-**Concept**: Updating specific items within an embedded array, per-item state transitions
-
-#### The Method Signature
-
-```python
-async def update_item_fulfillment(
-    self,
-    order_id: str,
-    item_id: str,
-    fulfillment_status: str,
-    tracking_number: Optional[str] = None,
-    carrier: Optional[str] = None
-) -> Order:
-```
-
-#### Algorithm
-
-```
-1. Get order by ID
-2. Find the item by item_id within order.items
-3. Validate the fulfillment status transition
-4. Update the item's fulfillment fields
-5. If all items shipped -> update order status to SHIPPED
-6. If all items delivered -> update order status to DELIVERED
-7. Save
-```
-
-**Finding an item in the embedded array:**
-```python
-target_item = None
-for item in order.items:
-    if item.item_id == item_id:
-        target_item = item
-        break
-if not target_item:
-    raise ValueError(f"Item '{item_id}' not found in order")
-```
-
-**Setting fulfillment fields:**
-```python
-target_item.fulfillment_status = FulfillmentStatus(fulfillment_status)
-if tracking_number:
-    target_item.tracking_number = tracking_number
-if carrier:
-    target_item.carrier = carrier
-if fulfillment_status == FulfillmentStatus.SHIPPED.value:
-    target_item.shipped_at = utc_now()
-    target_item.shipped_quantity = target_item.quantity
-elif fulfillment_status == FulfillmentStatus.DELIVERED.value:
-    target_item.delivered_at = utc_now()
-```
-
-**Auto-updating order status based on items:**
-```python
-# Check if all items have the same fulfillment status
-all_shipped = all(
-    item.fulfillment_status in (FulfillmentStatus.SHIPPED, FulfillmentStatus.DELIVERED)
-    for item in order.items
-)
-all_delivered = all(
-    item.fulfillment_status == FulfillmentStatus.DELIVERED
-    for item in order.items
-)
-
-if all_delivered:
-    order.status = OrderStatus.DELIVERED
-elif all_shipped:
-    order.status = OrderStatus.SHIPPED
-```
-
-<details>
-<summary>Full Implementation</summary>
-
-```python
-async def update_item_fulfillment(
-    self, order_id: str, item_id: str, fulfillment_status: str,
-    tracking_number=None, carrier=None
-) -> Order:
-    # Note: no user_id check - this is typically called by supplier/admin
+async def get_order(self, order_id: str) -> Order:
     try:
         order = await Order.get(PydanticObjectId(order_id))
     except Exception:
-        raise ValueError("Invalid order ID")
+        raise NotFoundError("Order not found")
     if not order:
-        raise ValueError("Order not found")
-
-    # Find the item
-    target_item = None
-    for item in order.items:
-        if item.item_id == item_id:
-            target_item = item
-            break
-    if not target_item:
-        raise ValueError(f"Item '{item_id}' not found in order")
-
-    # Validate fulfillment status
-    try:
-        new_status = FulfillmentStatus(fulfillment_status)
-    except ValueError:
-        raise ValueError(f"Invalid fulfillment status: {fulfillment_status}")
-
-    # Update item
-    target_item.fulfillment_status = new_status
-    if tracking_number:
-        target_item.tracking_number = tracking_number
-    if carrier:
-        target_item.carrier = carrier
-    if new_status == FulfillmentStatus.SHIPPED:
-        target_item.shipped_at = utc_now()
-        target_item.shipped_quantity = target_item.quantity
-    elif new_status == FulfillmentStatus.DELIVERED:
-        target_item.delivered_at = utc_now()
-
-    # Auto-update order status
-    all_delivered = all(
-        item.fulfillment_status == FulfillmentStatus.DELIVERED
-        for item in order.items
-    )
-    all_shipped = all(
-        item.fulfillment_status in (FulfillmentStatus.SHIPPED, FulfillmentStatus.DELIVERED)
-        for item in order.items
-    )
-
-    if all_delivered:
-        order.status = OrderStatus.DELIVERED
-    elif all_shipped:
-        order.status = OrderStatus.SHIPPED
-
-    await order.save()
+        raise NotFoundError("Order not found")
     return order
 ```
 </details>
+
+#### Verify
+
+```bash
+# Use the order ID from Exercise 5.2
+curl -s http://localhost:8000/orders/<order_id> | python3 -m json.tool
+```
+
+**Expected**: Full order with customer snapshot, items with product snapshots, shipping address.
+
+---
+
+### Exercise 5.4: List Orders - Skip/Limit Pagination with Status Filter
+
+**Concept**: Nested field query on `customer.user_id`, `$in` operator for multi-status filter, skip/limit pagination
+
+#### The Method Signature
+
+```python
+async def list_orders(
+    self,
+    user_id: str,
+    skip: int = 0,
+    limit: int = 20,
+    status_filter: Optional[str] = None,
+) -> list[Order]:
+```
+
+#### How It Works
+
+The route extracts `user_id` from the `X-User-ID` header and passes `status` as a comma-separated string query parameter (e.g., `?status=pending,confirmed`).
+
+#### The Query
+
+```python
+query = {"customer.user_id": PydanticObjectId(user_id)}
+```
+
+This queries inside the embedded `OrderCustomer` document. The index `[("customer.user_id", 1), ("created_at", -1)]` supports this query.
+
+#### The `$in` Status Filter
+
+The `status_filter` comes as a comma-separated string like `"pending,confirmed"`. Split it into a list:
+
+```python
+if status_filter:
+    statuses = [s.strip() for s in status_filter.split(",")]
+    query["status"] = {"$in": statuses}
+```
+
+This lets the client request only specific statuses:
+- `?status=pending,confirmed` - show "active" orders
+- `?status=delivered,cancelled` - show "completed" orders
+
+> **Index used**: `[("status", 1), ("created_at", -1)]` supports status-filtered queries.
+
+#### Pagination
+
+```python
+return (
+    await Order.find(query)
+    .sort("-created_at")
+    .skip(skip)
+    .limit(min(limit, 100))
+    .to_list()
+)
+```
+
+> **Hint Level 1**: Build a query dict starting with `customer.user_id`. Conditionally add `$in` for status filter. Sort by `-created_at`, apply skip/limit, return list.
+
+> **Hint Level 2**: Remember to cap the limit with `min(limit, 100)` to prevent abuse. Use `PydanticObjectId(user_id)` for the nested field query.
+
+<details>
+<summary>Hint Level 3 - Full Implementation</summary>
+
+```python
+async def list_orders(
+    self,
+    user_id: str,
+    skip: int = 0,
+    limit: int = 20,
+    status_filter: Optional[str] = None,
+) -> list[Order]:
+    query: dict = {"customer.user_id": PydanticObjectId(user_id)}
+    if status_filter:
+        statuses = [s.strip() for s in status_filter.split(",")]
+        query["status"] = {"$in": statuses}
+
+    return (
+        await Order.find(query)
+        .sort("-created_at")
+        .skip(skip)
+        .limit(min(limit, 100))
+        .to_list()
+    )
+```
+</details>
+
+#### Verify
+
+```bash
+# List all orders for a user
+curl -s "http://localhost:8000/orders?skip=0&limit=10" \
+  -H "X-User-ID: <user_id>" | python3 -m json.tool
+
+# Filter by status
+curl -s "http://localhost:8000/orders?status=pending" \
+  -H "X-User-ID: <user_id>" | python3 -m json.tool
+
+# Multiple statuses
+curl -s "http://localhost:8000/orders?status=pending,confirmed" \
+  -H "X-User-ID: <user_id>" | python3 -m json.tool
+```
+
+**Expected**: Array of orders sorted newest first, filtered by status if provided.
+
+---
+
+### Exercise 5.5: Cancel Order - Status Guard
+
+**Concept**: Status validation before state transition, Kafka event emission
+
+#### The Method Signature
+
+```python
+async def cancel_order(self, order_id: str, reason: str) -> Order:
+```
+
+> **Note the parameters**: Unlike previous tasks, cancel takes a `reason` string (from `CancelOrderRequest.reason`) rather than a `user_id`. The route extracts `X-User-ID` but only for auth - it passes `body.reason` to the service.
+
+#### Algorithm
+
+```
+1. Get the order (reuse self.get_order(order_id))
+2. Guard: order.status must be PENDING or CONFIRMED
+3. Set order.status = OrderStatus.CANCELLED
+4. Save
+5. Emit Kafka event: EventType.ORDER_CANCELLED
+6. Return order
+```
+
+#### The Status Guard
+
+```python
+if order.status not in (OrderStatus.PENDING, OrderStatus.CONFIRMED):
+    raise ValidationError("Only pending or confirmed orders can be cancelled")
+```
+
+> **Why only PENDING and CONFIRMED?** Once an order moves to PROCESSING, SHIPPED, or DELIVERED, cancellation requires a different workflow (returns, refunds). The service enforces this business rule.
+
+#### Kafka Event Data
+
+The cancel event only sends minimal data:
+
+```python
+self._kafka.emit(
+    event_type=EventType.ORDER_CANCELLED,
+    entity_id=oid_to_str(order.id),
+    data={"order_number": order.order_number},
+)
+```
+
+> **Contrast with create**: `ORDER_CREATED` sends the full `order.model_dump(mode="json")`. `ORDER_CANCELLED` only sends `order_number`. The MySQL consumer only needs to update the status column.
+
+> **Hint Level 1**: Fetch the order, check the status, update and save. Remember to emit the Kafka event.
+
+> **Hint Level 2**: Use `ValidationError` (not `ValueError`) from `shared.errors`. The `reason` parameter is received but not stored on the Order model in the current implementation - it's available for logging/event data if needed.
+
+<details>
+<summary>Hint Level 3 - Full Implementation</summary>
+
+```python
+async def cancel_order(self, order_id: str, reason: str) -> Order:
+    order = await self.get_order(order_id)
+    if order.status not in (OrderStatus.PENDING, OrderStatus.CONFIRMED):
+        raise ValidationError("Only pending or confirmed orders can be cancelled")
+
+    order.status = OrderStatus.CANCELLED
+    await order.save()
+
+    self._kafka.emit(
+        event_type=EventType.ORDER_CANCELLED,
+        entity_id=oid_to_str(order.id),
+        data={"order_number": order.order_number},
+    )
+    return order
+```
+</details>
+
+#### Verify
+
+```bash
+# Cancel a pending order
+curl -s -X POST http://localhost:8000/orders/<order_id>/cancel \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: <user_id>" \
+  -d '{"order_id": "<order_id>", "reason": "Changed my mind about this purchase"}' \
+  | python3 -m json.tool
+```
+
+**Expected**: Order returned with `status: "cancelled"`.
+
+```bash
+# Try to cancel again (should fail)
+curl -s -X POST http://localhost:8000/orders/<order_id>/cancel \
+  -H "Content-Type: application/json" \
+  -H "X-User-ID: <user_id>" \
+  -d '{"order_id": "<order_id>", "reason": "Trying again"}' \
+  | python3 -m json.tool
+```
+
+**Expected**: 422 error - "Only pending or confirmed orders can be cancelled".
 
 ---
 
@@ -1055,22 +719,20 @@ async def update_item_fulfillment(
 
 | # | Test | What to Verify |
 |---|------|---------------|
-| 1 | Create an order with valid user and product | Order created with status PENDING, `OrderCustomer` has user data, `ProductSnapshot` has product data |
-| 2 | Create an order with invalid product | Returns error |
-| 3 | Create an order with nonexistent variant | Returns error |
-| 4 | Get order by ID | Returns full order with all embedded data |
-| 5 | Get order by order number | Same order returned, case-insensitive |
-| 6 | Get another user's order | Returns "Order not found" (anti-enumeration) |
-| 7 | List user orders | Newest first, cursor pagination works |
+| 1 | Create an order with valid user and ACTIVE product | Order created with status `pending`, `OrderCustomer` has user data, `ProductSnapshot` has product data |
+| 2 | Create an order with invalid product ID | Returns `NotFoundError` |
+| 3 | Create an order with DRAFT/DISCONTINUED product | Returns `ValidationError` - product not available |
+| 4 | Create an order with deleted user | Returns `NotFoundError` from `build_order_customer` |
+| 5 | Get order by ID | Returns full order with all embedded data |
+| 6 | Get nonexistent order | Returns `NotFoundError` |
+| 7 | List user orders | Newest first, skip/limit works |
 | 8 | List user orders with status filter | Only matching statuses returned |
-| 9 | List with cursor | Second page returns different orders |
-| 10 | Update order status (PENDING -> CONFIRMED) | Status changes |
-| 11 | Update order status (DELIVERED -> PENDING) | Returns error (invalid transition) |
-| 12 | Cancel a PENDING order | Status CANCELLED, items CANCELLED |
-| 13 | Cancel a SHIPPED order | Returns error |
-| 14 | Update item fulfillment to SHIPPED | Item has tracking_number, shipped_at set |
-| 15 | Ship all items | Order status auto-updates to SHIPPED |
-| 16 | Deliver all items | Order status auto-updates to DELIVERED |
+| 9 | List with skip | Second page returns different orders |
+| 10 | Cancel a PENDING order | Status changes to `cancelled` |
+| 11 | Cancel a CANCELLED order | Returns `ValidationError` |
+| 12 | Cancel with reason | Service accepts reason parameter |
+| 13 | Order number format | Matches `ORD-YYYYMMDD-XXXX` pattern |
+| 14 | Product snapshot | Snapshot contains product_name, supplier_name, variant info frozen at order time |
 
 ---
 
@@ -1078,20 +740,20 @@ async def update_item_fulfillment(
 
 ### Challenge 1: Order Number Collision
 
-The `_generate_order_number` method uses 4 hex chars = 65,536 combinations per day. What happens when two orders get the same number?
+The `generate_order_number()` function uses 4 hex chars = 65,536 combinations per day. What happens when two orders get the same number?
 
 **Questions**:
-1. What error does MongoDB throw when a duplicate is inserted against a unique index?
+1. What error does MongoDB throw when a duplicate is inserted against the `order_number` index?
 2. Design a retry loop that catches `DuplicateKeyError` and regenerates the order number:
    ```python
    for attempt in range(3):
        try:
-           order.order_number = self._generate_order_number()
+           order.order_number = generate_order_number()
            await order.insert()
            break
        except DuplicateKeyError:
            if attempt == 2:
-               raise ValueError("Failed to generate unique order number")
+               raise ValidationError("Failed to generate unique order number")
    ```
 3. What alternative strategies exist? (UUID, database sequences, snowflake IDs)
 
@@ -1114,24 +776,54 @@ The `ProductSnapshot` freezes product data at order time. But what if:
    ```
 3. What MongoDB feature does `arrayFilters` use? (Filtered positional operator)
 
-### Challenge 3: Partial Shipment Edge Cases
+### Challenge 3: Add Ownership Check to get_order
 
-Consider an order with 3 items where item 1 is SHIPPED, item 2 is DELIVERED, and item 3 is PENDING.
+The current `get_order` has no user_id check - any user can view any order by ID. How would you add ownership scoping?
+
+**Design**:
+```python
+async def get_order(self, order_id: str, user_id: str = None) -> Order:
+    order = ...  # fetch by ID
+    if user_id:
+        # Anti-enumeration: compound query
+        order = await Order.find_one({
+            "_id": PydanticObjectId(order_id),
+            "customer.user_id": PydanticObjectId(user_id)
+        })
+    ...
+```
 
 **Questions**:
-1. What should `order.status` be? (PROCESSING? SHIPPED? Something else?)
-2. Our current logic checks `all_shipped` and `all_delivered`. What about mixed states?
-3. Design a more nuanced status calculation:
-   ```python
-   if all_delivered:
-       return OrderStatus.DELIVERED
-   elif all_shipped_or_delivered:
-       return OrderStatus.SHIPPED
-   elif any_shipped_or_delivered:
-       return OrderStatus.PROCESSING
-   else:
-       return order.status  # No change
-   ```
+1. Why is a compound `find_one` better than fetch-then-check for anti-enumeration?
+2. Which index supports this compound query?
+3. What would the route change look like?
+
+### Challenge 4: Full Status State Machine
+
+The current service only implements `cancel_order`. Design additional status transition methods:
+
+```python
+VALID_TRANSITIONS = {
+    OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED, OrderStatus.FAILED},
+    OrderStatus.CONFIRMED: {OrderStatus.PROCESSING, OrderStatus.CANCELLED},
+    OrderStatus.PROCESSING: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
+    OrderStatus.SHIPPED: {OrderStatus.DELIVERED},
+    OrderStatus.DELIVERED: {OrderStatus.REFUNDED},
+    OrderStatus.CANCELLED: set(),      # Terminal state
+    OrderStatus.REFUNDED: set(),       # Terminal state
+    OrderStatus.FAILED: set(),         # Terminal state
+}
+```
+
+Implement a generic `update_order_status(order_id, new_status)` method that validates transitions against this map.
+
+### Challenge 5: Per-Item Fulfillment Tracking
+
+Each `OrderItem` has a `fulfillment_status` field. Design an `update_item_fulfillment` method that:
+1. Finds an item by `item_id` within the order
+2. Updates its `fulfillment_status`, `tracking_number`, `carrier`
+3. Sets `shipped_at` / `delivered_at` timestamps
+4. Auto-updates the order-level `status` when all items reach SHIPPED or DELIVERED
 
 ---
 
@@ -1142,12 +834,11 @@ You've built the **e-commerce transaction engine** - the service that ties toget
 **Concepts you mastered**:
 - Cross-collection validation chain (User -> Product)
 - Product snapshot denormalization (freezing data at purchase time)
-- Compound `find_one` for anti-enumeration
-- Dual lookup strategies (by `_id` and by `order_number`)
-- Cursor pagination with descending `$lt` direction
-- `$in` status filter for multiple statuses
-- 8-status order lifecycle state machine
-- Per-item fulfillment tracking within embedded arrays
+- Utility function pattern (delegating snapshot building to helper functions)
+- Skip/limit pagination with `$in` status filter
+- Nested field queries (`customer.user_id`)
+- Status guard for order cancellation
 - Order number generation pattern
+- Kafka event emission with `EventType` enum
 
 **Your next task**: `TASK_08_ANALYTICS.md` - Aggregation Pipeline Exercises. You'll move beyond `find()` queries and build MongoDB **aggregation pipelines** using `$group`, `$match`, `$project`, `$unwind`, `$lookup`, and `$facet` to generate platform analytics across all the data you've created.

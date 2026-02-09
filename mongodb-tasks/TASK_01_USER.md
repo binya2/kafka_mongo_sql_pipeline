@@ -1,32 +1,33 @@
-# TASK 01: User Authentication Service
+# TASK 01: User Service
 
 ## 1. MISSION BRIEFING
 
-You are building the **authentication backbone** of a Social Commerce Platform - a system where celebrities create branded communities and consumers discover and buy products without leaving the ecosystem.
+You are building the **user management backbone** of a Social Commerce Platform - a system where users discover products, engage with social content, and make purchases without ever leaving the ecosystem.
 
-Every single action on the platform starts with a **User**. Registration, login, email verification, password reset - these are the gates through which every consumer and leader enters.
+Every single action on the platform starts with a **User**. Creating accounts, updating profiles, browsing content - these are the foundation on which every other service is built.
 
 ### What You Will Build
-The `AuthService` class - the service layer that handles all user authentication operations by writing MongoDB queries through Beanie ODM.
+The `UserService` class - the service layer that handles all user CRUD operations by writing MongoDB queries through Beanie ODM.
 
 ### What You Will Learn
 
 | MongoDB Concept | Where You'll Use It |
 |----------------|-------------------|
-| `find_one()` with nested field match | Querying `contact_info.primary_email` |
-| `find_one()` with array field match | Checking `contact_info.additional_emails` |
-| `Document.get()` by ObjectId | Fetching user by `_id` |
+| `find_one()` with nested field match | Checking email uniqueness via `contact_info.primary_email` |
+| `Document.get()` by ObjectId | Fetching a user by `_id` |
 | `document.insert()` | Creating new user documents |
 | `document.save()` | Updating existing documents |
+| `find()` with filter + sort + skip/limit | Listing users with pagination |
 | Embedded document construction | Building `ContactInfo`, `UserProfile` |
+| Soft delete pattern | Setting `deleted_at` instead of removing documents |
 
 ---
 
 ## 2. BEFORE YOU START
 
 ### Prerequisites
-- MongoDB running locally (via Docker)
-- Project dependencies installed
+- All 5 Docker containers running (`docker compose up -d`)
+- Swagger UI accessible at `http://localhost:8000/docs`
 - Basic understanding of Python async/await
 - No previous tasks required (this is Task 01)
 
@@ -40,31 +41,35 @@ shared/models/user.py
 ```
 This is your **data contract with MongoDB**. Every field, every embedded document - read it line by line. Pay special attention to:
 - The embedded types: `ContactInfo`, `BusinessAddress`, `UserProfile` - these are the building blocks
-- The `User` class (line 64) - this is what gets stored in MongoDB
+- The `User` class - this is what gets stored in MongoDB
 - The `save()` override - automatically updates `updated_at` on every save
-- Note: There are no indexes or helper methods defined yet - the model is minimal
+- Note: There are no indexes or Settings class defined - the model is minimal
 
 #### Step 2: The Schema (the API contract)
 ```
-apps/backend-service/src/schemas/auth.py
+apps/mongo_backend/schemas/user.py
 ```
-This defines **what the route sends you** (Request schemas) and **what you must return** (Response schemas). Your service sits between the route and the database.
+This defines **what the route sends you** (Request schemas). Focus on:
+- `CreateUserRequest` - fields: `email`, `password`, `display_name`, `phone`, `bio`
+- `UpdateUserRequest` - all fields optional: `display_name`, `phone`, `bio`, `avatar`
 
 #### Step 3: The Route (who calls you)
 ```
-apps/backend-service/src/routes/auth.py
+apps/mongo_backend/routes/user.py
 ```
 This is the HTTP layer. It receives requests, calls YOUR service methods, and formats responses. Notice:
-- Line 28-33: The route calls `auth_service.register_consumer()` and expects a dict back
-- Line 115-118: The route calls `auth_service.login()` with email, password, and ip_address
-- The route handles HTTP status codes - **your service throws ValueError for business errors**
+- The route calls `user_service.create_user()` and expects a `User` document back
+- The route wraps your return value with `user_response()` (strips `password_hash`, adds `id`)
+- Errors are handled by the global `AppError` exception handlers in `server.py`
 
 #### Step 4: The Utilities (your tools)
 ```
-apps/backend-service/src/utils/datetime_utils.py    → utc_now()
-apps/backend-service/src/utils/serialization.py     → oid_to_str()
-apps/backend-service/src/kafka/producer.py          → KafkaProducer.emit()
-apps/backend-service/src/kafka/topics.py            → Topic.USER
+apps/mongo_backend/utils/password.py          → hash_password(password)
+apps/mongo_backend/utils/datetime_utils.py    → utc_now()
+apps/mongo_backend/utils/serialization.py     → oid_to_str(object_id)
+apps/mongo_backend/kafka/producer.py          → KafkaProducer.emit()
+shared/kafka/topics.py                        → EventType.USER_CREATED, etc.
+shared/errors.py                              → DuplicateError, NotFoundError, etc.
 ```
 
 ### The Data Flow (understand this before writing any code)
@@ -75,7 +80,7 @@ HTTP Request
     ▼
 ┌─────────┐   Validates input      ┌───────────┐
 │  Route   │ ──────────────────────▶│  Schema   │
-│ auth.py  │   (Pydantic)          └───────────┘
+│ user.py  │   (Pydantic)          └───────────┘
 │          │
 │  Calls   │
 │  your    │
@@ -83,24 +88,25 @@ HTTP Request
     │
     ▼
 ┌──────────────────────────────────────────────┐
-│              AuthService (YOU WRITE THIS)     │
+│           UserService (YOU WRITE THIS)        │
 │                                              │
 │  1. Receives clean, validated data           │
 │  2. Applies business rules                   │
 │  3. Executes MongoDB queries via Beanie      │
 │  4. Emits Kafka events                       │
-│  5. Returns dict (route formats response)    │
+│  5. Returns User document                    │
 │                                              │
-│  Throws ValueError → route returns 400/401   │
-│  Throws Exception  → route returns 500       │
+│  Throws DuplicateError → route returns 409   │
+│  Throws NotFoundError  → route returns 404   │
+│  Throws Exception      → route returns 500   │
 └──────────────────────────────────────────────┘
     │
     ▼
-┌──────────┐
-│ MongoDB  │  (via Beanie ODM)
-│  users   │
-│collection│
-└──────────┘
+┌──────────┐       ┌──────────────┐
+│ MongoDB  │       │    Kafka     │
+│  users   │       │ user topic   │
+│collection│       │  (events)    │
+└──────────┘       └──────────────┘
 ```
 
 ---
@@ -139,8 +145,8 @@ When a User is saved to MongoDB, it looks like this in the database:
 User (Document - stored in "users" collection)
 ├── password_hash (str)
 ├── contact_info (ContactInfo)
-│   ├── primary_email (EmailStr)          ← LOGIN KEY
-│   ├── additional_emails (List[EmailStr]) ← ALSO CHECKED FOR UNIQUENESS
+│   ├── primary_email (EmailStr)          ← UNIQUENESS KEY
+│   ├── additional_emails (List[EmailStr])
 │   └── phone (Optional[str])
 ├── profile (UserProfile)
 │   ├── display_name (str)
@@ -184,30 +190,22 @@ Here is every method you must implement, with its complete contract.
 ### Class Setup
 
 ```python
-class AuthService:
+class UserService:
+    """Handles user and supplier DB operations."""
+
     def __init__(self):
-        self.password_min_length = 8
-        self.password_max_length = 128
         self._kafka = get_kafka_producer()
-        self.password_pattern = re.compile(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$')
 ```
 
 ### Method Signatures
 
 | # | Method | MongoDB Operation | Returns |
 |---|--------|------------------|---------|
-| 1 | `generate_verification_token(user_id, email)` | None | `str` (JWT) |
-| 2 | `generate_reset_token(user_id, email)` | None | `str` (JWT) |
-| 3 | `verify_token(token, token_type)` | None | `Dict` (payload) |
-| 4 | `hash_password(password)` | None | `str` (bcrypt hash) |
-| 5 | `verify_password(password, password_hash)` | None | `bool` |
-| 6 | `validate_password(password, email)` | None | `None` (raises ValueError) |
-| 7 | `is_email_available(email)` | `find_one` x2 | `bool` |
-| 8 | `register_consumer(email, password, display_name)` | `insert` | `Dict` |
-| 9 | `login(email, password)` | `find_one` + `save` | `Dict` |
-| 10 | `verify_email(token)` | `get` + `save` | `Dict` |
-| 11 | `request_password_reset(email)` | `find_one` | `Optional[str]` |
-| 12 | `reset_password(token, new_password)` | `get` + `save` | `Dict` |
+| 1 | `create_user(email, password, display_name, phone, bio)` | `find_one` + `insert` | `User` |
+| 2 | `get_user(user_id)` | `get` by ObjectId | `User` |
+| 3 | `list_users(skip, limit)` | `find` + filter + skip/limit | `list[User]` |
+| 4 | `update_user(user_id, display_name, phone, bio, avatar)` | `get` + `save` | `User` |
+| 5 | `delete_user(user_id)` | `get` + `save` (set deleted_at) | `None` |
 
 ---
 
@@ -217,248 +215,38 @@ class AuthService:
 
 ---
 
-### Exercise 5.1: Utility Foundation (No MongoDB)
+### Exercise 5.1: Your First Write - Create User
 
-**Concept:** Pure Python logic - bcrypt hashing, JWT tokens, regex validation
-**Difficulty:** Warm-up
-**Why this matters:** Every authentication flow depends on these utilities. Get them right first.
-
-#### Implement these 6 methods:
-
-**5.1.1 - `generate_verification_token(self, user_id: str, email: str) -> str`**
-
-Create a JWT token for email verification.
-
-Requirements:
-- Payload must contain: `user_id`, `email`, `type` (set to `"email_verification"`), `exp` (6 hours from now)
-- Use `JWT_SECRET` and `JWT_ALGORITHM` constants defined at module level
-- Use `utc_now()` from datetime_utils for the current time
-
-**5.1.2 - `generate_reset_token(self, user_id: str, email: str) -> str`**
-
-Create a JWT token for password reset.
-
-Requirements:
-- Same as verification token but: `type` = `"password_reset"`, `exp` = 1 hour from now
-
-**5.1.3 - `verify_token(self, token: str, token_type: str) -> Dict[str, Any]`**
-
-Decode and validate a JWT token.
-
-Requirements:
-- Decode the token using `jwt.decode()` with `JWT_SECRET` and `[JWT_ALGORITHM]`
-- Verify the `type` field in the payload matches `token_type` parameter
-- Return the decoded payload dict
-- Raise `ValueError("Invalid token type")` if type doesn't match
-- Raise `ValueError("Token has expired")` for `jwt.ExpiredSignatureError`
-- Raise `ValueError("Invalid token")` for `jwt.InvalidTokenError`
-
-**5.1.4 - `hash_password(self, password: str) -> str`**
-
-Hash a password using bcrypt.
-
-Requirements:
-- Generate a salt with `bcrypt.gensalt(rounds=12)`
-- Hash using `bcrypt.hashpw()` - encode password to UTF-8 before hashing
-- Return the hash as a string (decode from bytes)
-
-**5.1.5 - `verify_password(self, password: str, password_hash: str) -> bool`**
-
-Verify a password against its hash.
-
-Requirements:
-- Use `bcrypt.checkpw()` - encode both password and hash to UTF-8
-- Return the boolean result
-
-**5.1.6 - `validate_password(self, password: str, email: str) -> None`**
-
-Validate password meets security requirements.
-
-Requirements:
-- Check length: must be between `self.password_min_length` (8) and `self.password_max_length` (128)
-- Check pattern: must match `self.password_pattern` (at least 1 uppercase, 1 lowercase, 1 digit)
-- Check email leak: password cannot contain the email username (part before `@`, case-insensitive)
-- Raise `ValueError` with descriptive message for each failure
-- Return `None` if password is valid (no return value needed)
-
-#### Verify Exercise 5.1
-
-Test in Python shell:
-```python
-auth = AuthService()
-
-# Test password hashing
-hashed = auth.hash_password("MyPass123")
-assert auth.verify_password("MyPass123", hashed) == True
-assert auth.verify_password("WrongPass", hashed) == False
-
-# Test password validation
-auth.validate_password("MyPass123", "user@example.com")  # Should pass
-# auth.validate_password("short", "user@example.com")    # Should raise ValueError
-# auth.validate_password("nouppercase1", "u@e.com")      # Should raise ValueError
-
-# Test token generation
-token = auth.generate_verification_token("user123", "test@example.com")
-payload = auth.verify_token(token, "email_verification")
-assert payload["user_id"] == "user123"
-assert payload["email"] == "test@example.com"
-```
-
----
-
-### Exercise 5.2: Your First MongoDB Query - Email Availability
-
-**Concept:** `find_one()` with nested field match + array field match
-**Difficulty:** Easy
-**Why this matters:** Before creating any user, we must ensure email uniqueness. This is your first real MongoDB query.
-
-#### Implement: `is_email_available(self, email: str) -> bool`
-
-**Business Rules:**
-1. Normalize the email: lowercase and strip whitespace
-2. Check if the email is used as ANY user's **primary email**
-3. Check if the email is used as ANY user's **additional email**
-4. Return `True` only if neither check finds a match
-
-**The MongoDB Queries You Need:**
-
-Query 1 - Check primary email:
-```
-Find ONE document in the users collection where
-the nested field contact_info.primary_email equals the given email
-```
-
-Query 2 - Check additional emails:
-```
-Find ONE document in the users collection where
-the array field contact_info.additional_emails contains the given email
-```
-
-**Error handling:**
-- Wrap in try/except
-- Re-raise any exception as `Exception(f"Failed to check email availability: {str(e)}")`
-
-<details>
-<summary><b>Hint Level 1</b> - Direction</summary>
-
-Beanie provides `ModelClass.find_one(filter_dict)` which maps directly to MongoDB's `findOne()`. For nested fields, use dot notation in the filter key. For array fields, MongoDB automatically checks if the value exists anywhere in the array.
-
-</details>
-
-<details>
-<summary><b>Hint Level 2</b> - Pattern</summary>
-
-```python
-# Nested field query (dot notation):
-user = await User.find_one({"contact_info.primary_email": email})
-
-# Array field query (automatic $in-like behavior):
-user = await User.find_one({"contact_info.additional_emails": email})
-```
-
-MongoDB automatically searches arrays when you query a field that contains an array. You don't need `$in` or `$elemMatch` for simple equality matches.
-
-</details>
-
-<details>
-<summary><b>Hint Level 3</b> - Near-complete solution</summary>
-
-```python
-async def is_email_available(self, email: str) -> bool:
-    try:
-        email = email.lower().strip()
-
-        # Check primary email (uses index: contact_info.primary_email)
-        user = await User.find_one({"contact_info.primary_email": email})
-        if user:
-            return False
-
-        # Check additional emails (uses index: contact_info.additional_emails)
-        user = await User.find_one({"contact_info.additional_emails": email})
-        if user:
-            return False
-
-        return True
-    except Exception as e:
-        raise Exception(f"Failed to check email availability: {str(e)}")
-```
-
-</details>
-
-#### Verify Exercise 5.2
-
-With an empty database, this should return `True`:
-```bash
-# You can test this via the register endpoint later,
-# or test directly in a Python shell:
-# await auth_service.is_email_available("new@example.com")  → True
-```
-
-#### Index Checkpoint
-
-**Question:** The User model does not define any custom indexes. What does this mean for the two queries in this method?
-
-<details>
-<summary>Answer</summary>
-
-Without custom indexes, both queries perform a **collection scan** (COLLSCAN) - MongoDB checks every document. This is fine for development and small datasets, but in production you'd want to add indexes on `contact_info.primary_email` and `contact_info.additional_emails` to make these O(log n) instead of O(n).
-
-</details>
-
----
-
-### Exercise 5.3: Your First Write - Register Consumer
-
-**Concept:** Document construction with embedded objects + `insert()`
+**Concept:** `find_one()` for uniqueness check + embedded document construction + `insert()`
 **Difficulty:** Easy-Medium
-**Why this matters:** This is how users enter the platform. You'll build a complete `User` document from scratch and persist it to MongoDB.
+**Why this matters:** This is how users enter the platform. You'll check uniqueness, build a complete `User` document from scratch, and persist it to MongoDB.
 
-#### Implement: `register_consumer(self, email: str, password: str, display_name: str) -> Dict[str, Any]`
+#### Implement: `create_user(self, email, password, display_name, phone=None, bio=None) -> User`
 
 **Business Rules (implement in this order):**
-1. Normalize inputs: `email.lower().strip()`, `display_name.strip()`
-2. Check email availability using your `is_email_available()` method
-   - If not available → raise `ValueError("Email already in use")`
-3. Validate password using your `validate_password()` method
-   - It raises ValueError internally if invalid
-4. Build the User document:
-   - `password_hash`: hash the password
-   - `contact_info`: create `ContactInfo` with `primary_email=email`
-   - `profile`: create `UserProfile` with `display_name=display_name`
+1. Normalize the email: `email.lower().strip()`
+2. Check email uniqueness by querying `contact_info.primary_email`
+   - If a user exists with this email → raise `DuplicateError("Email already in use")`
+3. Build the User document:
+   - `password_hash`: use `hash_password(password)` from `utils/password.py`
+   - `contact_info`: create `ContactInfo` with `primary_email=email` and `phone=phone`
+   - `profile`: create `UserProfile` with `display_name=display_name` and `bio=bio`
    - All other fields use their defaults (`deleted_at=None`, `version=1`, timestamps auto-set)
-5. Insert the document into MongoDB
-6. Emit a Kafka event (topic: `Topic.USER`, action: `"registered"`)
-7. Generate a verification token
-8. Return the result dict
+4. Insert the document into MongoDB
+5. Emit a Kafka event: `EventType.USER_CREATED`
+6. Return the User document
 
-**The MongoDB Operation:**
+**The MongoDB Operations:**
 
 ```
-INSERT a new User document into the "users" collection
+Operation 1: FIND_ONE → Check if email already exists
+Operation 2: INSERT   → Persist the new User document
 ```
-
-**Return format** (the route expects exactly this structure):
-```python
-{
-    "user": {
-        "id": "string (the MongoDB ObjectId as string)",
-        "email": "the primary email",
-        "display_name": "the display name"
-    },
-    "verification_token": "the JWT token string"
-}
-```
-
-**Error handling:**
-- `ValueError` → re-raise as-is
-- Any other exception → raise `Exception(f"Failed to register consumer: {str(e)}")`
 
 <details>
 <summary><b>Hint Level 1</b> - Direction</summary>
 
-In Beanie, you construct a document by instantiating the model class, then call `await document.insert()` to persist it. The `id` field is auto-generated by MongoDB after insert.
-
-Use `oid_to_str(user.id)` to convert the ObjectId to a string for the response.
+Beanie provides `ModelClass.find_one(filter_dict)` which maps directly to MongoDB's `findOne()`. For nested fields, use dot notation in the filter key. To insert, instantiate the model class and call `await document.insert()`.
 
 </details>
 
@@ -466,19 +254,20 @@ Use `oid_to_str(user.id)` to convert the ObjectId to a string for the response.
 <summary><b>Hint Level 2</b> - Pattern</summary>
 
 ```python
+# Uniqueness check (dot notation for nested field):
+existing = await User.find_one({"contact_info.primary_email": email})
+
 # Document construction:
 user = User(
-    password_hash=self.hash_password(password),
-    contact_info=ContactInfo(primary_email=email),
-    profile=UserProfile(display_name=display_name)
-    # deleted_at, version, created_at, updated_at all use defaults from the model
+    password_hash=hash_password(password),
+    contact_info=ContactInfo(primary_email=email, phone=phone),
+    profile=UserProfile(display_name=display_name, bio=bio),
 )
 
 # Insert:
 await user.insert()
 
 # After insert, user.id is populated by MongoDB
-user_id = oid_to_str(user.id)  # "507f1f77bcf86cd799439011"
 ```
 
 </details>
@@ -487,54 +276,33 @@ user_id = oid_to_str(user.id)  # "507f1f77bcf86cd799439011"
 <summary><b>Hint Level 3</b> - Near-complete solution</summary>
 
 ```python
-async def register_consumer(self, email, password, display_name):
-    try:
-        email = email.lower().strip()
-        display_name = display_name.strip()
+async def create_user(self, email, password, display_name, phone=None, bio=None):
+    email = email.lower().strip()
+    existing = await User.find_one({"contact_info.primary_email": email})
+    if existing:
+        raise DuplicateError("Email already in use")
 
-        if not await self.is_email_available(email):
-            raise ValueError("Email already in use")
+    user = User(
+        password_hash=hash_password(password),
+        contact_info=ContactInfo(primary_email=email, phone=phone),
+        profile=UserProfile(display_name=display_name, bio=bio),
+    )
+    await user.insert()
 
-        self.validate_password(password, email)
-
-        user = User(
-            password_hash=self.hash_password(password),
-            contact_info=ContactInfo(primary_email=email),
-            profile=UserProfile(display_name=display_name)
-        )
-        await user.insert()
-
-        user_id = oid_to_str(user.id)
-
-        self._kafka.emit(
-            topic=Topic.USER,
-            action="registered",
-            entity_id=user_id,
-            data=user.model_dump(mode="json"),
-        )
-
-        verification_token = self.generate_verification_token(user_id, email)
-
-        return {
-            "user": {
-                "id": user_id,
-                "email": user.contact_info.primary_email,
-                "display_name": user.profile.display_name
-            },
-            "verification_token": verification_token
-        }
-    except ValueError as e:
-        raise ValueError(str(e))
-    except Exception as e:
-        raise Exception(f"Failed to register consumer: {str(e)}")
+    self._kafka.emit(
+        event_type=EventType.USER_CREATED,
+        entity_id=oid_to_str(user.id),
+        data=user.model_dump(mode="json"),
+    )
+    return user
 ```
 
 </details>
 
-#### Verify Exercise 5.3
+#### Verify Exercise 5.1
 
 ```bash
-curl -X POST http://localhost:8000/auth/register \
+curl -X POST http://localhost:8000/users \
   -H "Content-Type: application/json" \
   -d '{
     "email": "consumer@example.com",
@@ -546,19 +314,30 @@ curl -X POST http://localhost:8000/auth/register \
 **Expected response (201 Created):**
 ```json
 {
-  "user": {
-    "id": "<some-object-id>",
-    "email": "consumer@example.com",
-    "display_name": "Test Consumer"
+  "id": "<some-object-id>",
+  "contact_info": {
+    "primary_email": "consumer@example.com",
+    "additional_emails": [],
+    "phone": null
   },
-  "message": "Registration successful. Verification email sent to consumer@example.com",
-  "verification_token": "<jwt-token>"
+  "profile": {
+    "display_name": "Test Consumer",
+    "avatar": "https://cdn.example.com/avatars/default.jpg",
+    "bio": null,
+    "date_of_birth": null
+  },
+  "deleted_at": null,
+  "version": 1,
+  "created_at": "...",
+  "updated_at": "..."
 }
 ```
 
-**Test duplicate email (400 Bad Request):**
+> Note: `password_hash` is stripped from the response by the `user_response()` utility in the route layer.
+
+**Test duplicate email (409 Conflict):**
 ```bash
-curl -X POST http://localhost:8000/auth/register \
+curl -X POST http://localhost:8000/users \
   -H "Content-Type: application/json" \
   -d '{
     "email": "consumer@example.com",
@@ -575,51 +354,39 @@ You should see the full document with all default fields populated.
 
 ---
 
-### Exercise 5.4: The Login Flow - Find, Validate, Update
+### Exercise 5.2: Get By ID - The Primary Key Lookup
 
-**Concept:** `find_one()` with conditional reads + `save()` for updating
-**Difficulty:** Medium
-**Why this matters:** Login is the most important authentication operation. It combines reading, validating, and conditionally writing back to the database - all in a single method. This is the "find → check → act" pattern you'll use everywhere.
+**Concept:** `Document.get(ObjectId)` - fetching by `_id` + soft delete check
+**Difficulty:** Easy
+**Why this matters:** Every update and delete operation starts by fetching the user first. The `_id` lookup is the fastest possible query in MongoDB.
 
-#### Implement: `login(self, email: str, password: str) -> Dict[str, Any]`
+#### Implement: `get_user(self, user_id: str) -> User`
 
-**This is the most important method in this task.** It has 4 distinct phases:
+**Business Rules:**
+1. Convert the string `user_id` to a `PydanticObjectId`
+   - If invalid → raise `NotFoundError("User not found")`
+2. Fetch the user by `_id` using `User.get()`
+   - If not found → raise `NotFoundError("User not found")`
+3. Check soft delete: if `user.deleted_at` is set → raise `NotFoundError("User not found")`
+4. Return the User document
 
-#### Phase 1: Find the user
-- Normalize email (lowercase, strip)
-- Query: find one user by `contact_info.primary_email`
-- If not found → raise `ValueError("Invalid email or password")`
-
-> **Security note:** We say "Invalid email or password" (not "Email not found") to prevent email enumeration attacks.
-
-#### Phase 2: Check soft delete
-- If `user.deleted_at is not None` → raise `ValueError("Account no longer exists")`
-
-#### Phase 3: Verify password
-- Use `self.verify_password(password, user.password_hash)`
-- If password is WRONG → raise `ValueError("Invalid email or password")`
-
-#### Phase 4: Return user data
-- Save the user (triggers `updated_at` timestamp update via the save override)
-- Emit Kafka event: topic=`Topic.USER`, action=`"login"`
-
-```python
-{
-    "id": user_id,
-    "email": user.contact_info.primary_email,
-    "display_name": user.profile.display_name,
-    "avatar": user.profile.avatar
-}
+**The MongoDB Operation:**
+```
+GET by _id  →  User.get(PydanticObjectId("507f1f77bcf86cd799439011"))
 ```
 
-**Error handling:**
-- `ValueError` → re-raise
-- Any other → raise `Exception(f"Failed to login: {str(e)}")`
+**Key Distinction:**
+```
+find_one({"contact_info.primary_email": "x"})  ← Field query (collection scan without index)
+User.get(PydanticObjectId("507f..."))           ← _id lookup (uses primary key, always fastest)
+```
+
+`User.get()` is Beanie's wrapper around `find_one({"_id": ObjectId(...)})`. The `_id` field has a unique index by default in every MongoDB collection.
 
 <details>
 <summary><b>Hint Level 1</b> - Direction</summary>
 
-The key MongoDB operation is the initial `find_one`. Everything after that is Python logic operating on the returned document object. When you call `save()`, Beanie sends an update to MongoDB replacing the document (and the save override updates `updated_at`).
+Wrap the `User.get()` call in a try/except to catch invalid ObjectId strings. An invalid string like `"not-a-valid-id"` will throw an exception when converting to `PydanticObjectId`.
 
 </details>
 
@@ -627,108 +394,202 @@ The key MongoDB operation is the initial `find_one`. Everything after that is Py
 <summary><b>Hint Level 2</b> - Pattern</summary>
 
 ```python
-# Phase 1: Find
-user = await User.find_one({"contact_info.primary_email": email})
-if not user:
-    raise ValueError("Invalid email or password")
+try:
+    user = await User.get(PydanticObjectId(user_id))
+except Exception:
+    raise NotFoundError("User not found")
+if not user or user.deleted_at:
+    raise NotFoundError("User not found")
+return user
+```
 
-# Phase 2: Soft delete check
-if user.deleted_at is not None:
-    raise ValueError("Account no longer exists")
+</details>
 
-# Phase 3: Verify password
-if not self.verify_password(password, user.password_hash):
-    raise ValueError("Invalid email or password")
+#### Verify Exercise 5.2
 
-# Phase 4: Save (updates updated_at) and return
-await user.save()
+Use the `id` from the user you created in Exercise 5.1:
+```bash
+curl http://localhost:8000/users/<user-id>
+```
+
+**Expected (200 OK):**
+```json
+{
+  "id": "<user-id>",
+  "contact_info": { ... },
+  "profile": { ... },
+  ...
+}
+```
+
+**Non-existent user (404):**
+```bash
+curl http://localhost:8000/users/000000000000000000000000
+```
+
+---
+
+### Exercise 5.3: List Users - Filtering and Pagination
+
+**Concept:** `find()` with filter + `skip()` + `limit()` + `to_list()`
+**Difficulty:** Easy
+**Why this matters:** Every listing endpoint needs pagination. This teaches you the skip/limit pattern and how to filter soft-deleted documents at the database level.
+
+#### Implement: `list_users(self, skip: int = 0, limit: int = 20) -> list[User]`
+
+**Business Rules:**
+1. Query all users where `deleted_at` is `None` (exclude soft-deleted users)
+2. Apply `skip` for pagination offset
+3. Cap `limit` at 100 maximum (prevent large queries)
+4. Return the list
+
+**The MongoDB Operation:**
+```
+FIND where deleted_at == null, SKIP n, LIMIT m → list of User documents
+```
+
+<details>
+<summary><b>Hint Level 1</b> - Direction</summary>
+
+Beanie's `find()` returns a query builder. Chain `.skip()`, `.limit()`, and `.to_list()` to execute the query.
+
+</details>
+
+<details>
+<summary><b>Hint Level 2</b> - Pattern</summary>
+
+```python
+return (
+    await User.find({"deleted_at": None})
+    .skip(skip)
+    .limit(min(limit, 100))
+    .to_list()
+)
+```
+
+</details>
+
+#### Verify Exercise 5.3
+
+```bash
+curl "http://localhost:8000/users?limit=10&skip=0"
+```
+
+**Expected (200 OK):** Array of user objects.
+
+---
+
+### Exercise 5.4: Update User - Partial Field Updates
+
+**Concept:** Fetch → modify only provided fields → `save()`
+**Difficulty:** Easy-Medium
+**Why this matters:** PATCH semantics mean only updating fields that were explicitly sent. You'll learn the "fetch → modify → save" pattern used throughout the codebase.
+
+#### Implement: `update_user(self, user_id, display_name=None, phone=None, bio=None, avatar=None) -> User`
+
+**Business Rules:**
+1. Fetch the user using `self.get_user(user_id)` (reuses your Exercise 5.2 implementation)
+2. For each parameter that is **not None**, update the corresponding field:
+   - `display_name` → `user.profile.display_name`
+   - `phone` → `user.contact_info.phone`
+   - `bio` → `user.profile.bio`
+   - `avatar` → `user.profile.avatar`
+3. Save the user (the `save()` override auto-updates `updated_at`)
+4. Emit `EventType.USER_UPDATED` Kafka event
+5. Return the updated User document
+
+**The MongoDB Operations:**
+```
+Operation 1: GET by _id (via get_user)
+Operation 2: SAVE → replaces the document with updated fields
+```
+
+> **Important:** Only update fields that are explicitly provided (not None). If the request only sends `display_name`, don't touch `phone`, `bio`, or `avatar`.
+
+<details>
+<summary><b>Hint Level 1</b> - Direction</summary>
+
+Check each parameter with `if display_name is not None:` before assigning. This preserves the "partial update" semantics of PATCH requests.
+
+</details>
+
+<details>
+<summary><b>Hint Level 2</b> - Pattern</summary>
+
+```python
+user = await self.get_user(user_id)
+
+if display_name is not None:
+    user.profile.display_name = display_name
+if phone is not None:
+    user.contact_info.phone = phone
+# ... same for bio, avatar
+
+await user.save()  # auto-updates updated_at
+
+self._kafka.emit(
+    event_type=EventType.USER_UPDATED,
+    entity_id=oid_to_str(user.id),
+    data=user.model_dump(mode="json"),
+)
+return user
 ```
 
 </details>
 
 #### Verify Exercise 5.4
 
-**Successful login** (use the consumer you registered in 5.3):
 ```bash
-curl -X POST http://localhost:8000/auth/login \
+curl -X PATCH http://localhost:8000/users/<user-id> \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "consumer@example.com",
-    "password": "MySecure1Pass"
+    "display_name": "Updated Name",
+    "bio": "Hello, I am a test user!"
   }'
 ```
 
-**Expected (200 OK):**
-```json
-{
-  "user": {
-    "id": "<object-id>",
-    "email": "consumer@example.com",
-    "display_name": "Test Consumer",
-    "avatar": "https://cdn.example.com/avatars/default.jpg"
-  }
-}
-```
+**Expected (200 OK):** User object with updated `display_name` and `bio`, but unchanged `phone` and `avatar`.
 
-**Wrong password (401):**
-```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "consumer@example.com",
-    "password": "WrongPassword1"
-  }'
+**Verify in MongoDB shell:**
+```javascript
+db.users.findOne({"_id": ObjectId("<user-id>")}, {"profile": 1, "updated_at": 1})
+// profile.display_name should be "Updated Name"
+// updated_at should be recent
 ```
 
 ---
 
-### Exercise 5.5: Get By ID - Email Verification
+### Exercise 5.5: Soft Delete - The Deletion Pattern
 
-**Concept:** `Document.get(ObjectId)` - fetching by `_id` vs querying by field
-**Difficulty:** Medium
-**Why this matters:** Login finds users by email (field query). Verification finds users by their ID embedded in the JWT token. These are fundamentally different MongoDB operations.
+**Concept:** Fetch → set `deleted_at` → `save()` (instead of removing the document)
+**Difficulty:** Easy
+**Why this matters:** Soft delete preserves data for audit trails and recovery. Instead of removing the document, we timestamp when it was "deleted". All subsequent queries (get, list) must exclude these documents.
 
-#### Implement: `verify_email(self, token: str) -> Dict[str, Any]`
+#### Implement: `delete_user(self, user_id: str) -> None`
 
 **Business Rules:**
-1. Verify the token using `self.verify_token(token, "email_verification")`
-   - This returns a payload dict with `user_id` and `email`
-2. Get the user by ID using `User.get(ObjectId(user_id))`
-   - If not found → raise `ValueError("User not found")`
-3. Save the user (triggers `updated_at` update)
-4. Emit Kafka event: topic=`Topic.USER`, action=`"email_verified"`
-5. Return result dict
-
-> **Note:** The User model does not have an `email_verified` field. This exercise focuses on the `User.get(ObjectId)` pattern - fetching a document by its `_id`. In a production system, you would add an `email_verified` field to the model.
+1. Fetch the user using `self.get_user(user_id)`
+2. Set `user.deleted_at` to the current UTC time using `utc_now()`
+3. Save the user
+4. Emit `EventType.USER_DELETED` Kafka event
+5. Return nothing (`None`)
 
 **The MongoDB Operations:**
-
 ```
-Operation 1: GET by _id  →  User.get(ObjectId("507f1f77bcf86cd799439011"))
-Operation 2: SAVE        →  Updates the document in place
-```
-
-**Return format:**
-```python
-{
-    "id": "string",
-    "email": "string",
-    "verified": True
-}
+Operation 1: GET by _id (via get_user)
+Operation 2: SAVE → sets deleted_at timestamp
 ```
 
-**Key Distinction:**
-```
-find_one({"contact_info.primary_email": "x"})  ← Field query (collection scan without index)
-User.get(ObjectId("507f..."))                   ← _id lookup (uses primary key, always fastest)
-```
-
-`User.get()` is Beanie's wrapper around `find_one({"_id": ObjectId(...)})`. The `_id` field has a unique index by default in every MongoDB collection - you never need to define it.
+> **Why not hard delete?** Soft delete lets you:
+> - Recover accidentally deleted accounts
+> - Maintain referential integrity (orders, posts still reference the user)
+> - Comply with audit requirements
+> - Support "undo" functionality
 
 <details>
 <summary><b>Hint Level 1</b> - Direction</summary>
 
-You need `from bson import ObjectId` to convert the string user_id from the token payload into a proper ObjectId for the query. `User.get()` expects an ObjectId, not a string.
+This is the same fetch-modify-save pattern as `update_user`, but you're setting `deleted_at` instead of profile fields.
 
 </details>
 
@@ -736,132 +597,39 @@ You need `from bson import ObjectId` to convert the string user_id from the toke
 <summary><b>Hint Level 2</b> - Pattern</summary>
 
 ```python
-payload = self.verify_token(token, "email_verification")
-user_id = payload.get("user_id")
-
-user = await User.get(ObjectId(user_id))
-if not user:
-    raise ValueError("User not found")
-
+user = await self.get_user(user_id)
+user.deleted_at = utc_now()
 await user.save()
+
+self._kafka.emit(
+    event_type=EventType.USER_DELETED,
+    entity_id=oid_to_str(user.id),
+    data={"user_id": oid_to_str(user.id)},
+)
 ```
 
 </details>
 
 #### Verify Exercise 5.5
 
-Use the verification token from registration (Exercise 5.3):
 ```bash
-# First, register a fresh user and capture the token:
-RESPONSE=$(curl -s -X POST http://localhost:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "verify.me@example.com",
-    "password": "VerifyMe1Pass",
-    "display_name": "Verify Test"
-  }')
+# Delete the user
+curl -X DELETE http://localhost:8000/users/<user-id>
+# Expected: 204 No Content
 
-TOKEN=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['verification_token'])")
+# Try to get the deleted user
+curl http://localhost:8000/users/<user-id>
+# Expected: 404 Not Found (because get_user checks deleted_at)
 
-# Now verify:
-curl -X POST http://localhost:8000/auth/verify-email \
-  -H "Content-Type: application/json" \
-  -d "{\"token\": \"$TOKEN\"}"
-```
-
-**Expected (200 OK):**
-```json
-{
-  "id": "<object-id>",
-  "email": "verify.me@example.com",
-  "verified": true
-}
+# List users - deleted user should not appear
+curl http://localhost:8000/users
+# Expected: Array without the deleted user
 ```
 
 **Verify in MongoDB shell:**
 ```javascript
-db.users.findOne(
-  {"contact_info.primary_email": "verify.me@example.com"},
-  {"updated_at": 1}
-)
-// updated_at should be recent (confirming the save worked)
-```
-
----
-
-### Exercise 5.6: Complete the Flow - Password Reset
-
-**Concept:** Combining `find_one` + token generation + `get` by ID + field update + `save`
-**Difficulty:** Medium
-**Why this matters:** Password reset touches every concept from previous exercises. It's your integration test.
-
-#### Implement TWO methods:
-
-**5.6.1 - `request_password_reset(self, email: str) -> Optional[str]`**
-
-Request a password reset. Returns a reset token if the user exists, `None` otherwise.
-
-**Business Rules:**
-1. Normalize email (lowercase, strip)
-2. Find user by primary email
-3. If not found → return `None` (don't reveal whether email exists)
-4. Emit Kafka event: topic=`Topic.USER`, action=`"password_reset_requested"`
-5. Generate and return a reset token
-
-**Security note:** The route always returns "If the email exists, a reset link has been sent" regardless of whether we found a user. This prevents email enumeration.
-
-**5.6.2 - `reset_password(self, token: str, new_password: str) -> Dict[str, Any]`**
-
-Complete the password reset using the token.
-
-**Business Rules:**
-1. Verify the token: `self.verify_token(token, "password_reset")`
-2. Extract `user_id` and `email` from payload
-3. Get user by ID: `User.get(ObjectId(user_id))`
-   - If not found → raise `ValueError("User not found")`
-4. Validate the new password: `self.validate_password(new_password, email)`
-5. Update the password:
-   - `user.password_hash` = hash of new password
-6. Save the user (triggers `updated_at` update)
-7. Emit Kafka event: topic=`Topic.USER`, action=`"password_reset"`
-8. Return `{"message": "Password reset successful"}`
-
-<details>
-<summary><b>Hint Level 1</b> - Direction</summary>
-
-`request_password_reset` is essentially: find_one → if found, generate token. `reset_password` is: verify token → get by id → update field → save. Both are combinations of patterns you've already implemented.
-
-</details>
-
-#### Verify Exercise 5.6
-
-```bash
-# Step 1: Request reset
-curl -X POST http://localhost:8000/auth/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{"email": "consumer@example.com"}'
-# Response: {"message": "If the email exists, a password reset link has been sent"}
-
-# Step 2: Use the token (in production this comes from email)
-# For testing, call request_password_reset directly and use the token:
-
-# Step 3: Reset with new password
-curl -X POST http://localhost:8000/auth/reset-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token": "<paste-reset-token-here>",
-    "new_password": "MyNewSecure1Pass"
-  }'
-# Response: {"message": "Password reset successful"}
-
-# Step 4: Login with new password should work
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "consumer@example.com",
-    "password": "MyNewSecure1Pass"
-  }'
-# Response: 200 OK with user data
+db.users.findOne({"_id": ObjectId("<user-id>")})
+// Document still exists but deleted_at is set to a timestamp
 ```
 
 ---
@@ -871,28 +639,29 @@ curl -X POST http://localhost:8000/auth/login \
 Before moving to TASK_02, verify that ALL of the following pass:
 
 ### Functional Checks
-- [ ] **Register consumer** - creates document with correct defaults (`deleted_at=null`, `version=1`, timestamps set)
-- [ ] **Duplicate email rejected** - second registration with same email fails with 400
-- [ ] **Login success** - returns user data (id, email, display_name, avatar)
-- [ ] **Login wrong password** - returns 401 with "Invalid email or password"
-- [ ] **Login soft-deleted user** - returns error "Account no longer exists"
-- [ ] **Email verification** - successfully retrieves user by ID from token, saves user
-- [ ] **Password reset request** - returns token for existing user, `None` for non-existent
-- [ ] **Password reset complete** - changes `password_hash`, old password no longer works
+- [ ] **Create user** - creates document with correct defaults (`deleted_at=null`, `version=1`, timestamps set)
+- [ ] **Duplicate email rejected** - second registration with same email fails with 409
+- [ ] **Get user** - returns user data by ID
+- [ ] **Get non-existent user** - returns 404
+- [ ] **List users** - returns array, respects skip/limit
+- [ ] **List users excludes deleted** - soft-deleted users don't appear in list
+- [ ] **Update user** - updates only provided fields, leaves others unchanged
+- [ ] **Delete user** - sets `deleted_at`, user no longer accessible via get/list
 
 ### Database Checks (MongoDB shell)
 - [ ] `db.users.countDocuments()` - shows correct number of users created
-- [ ] `db.users.getIndexes()` - shows only the default `_id` index (no custom indexes in model)
+- [ ] `db.users.getIndexes()` - shows only the default `_id` index
 - [ ] Document has correct embedded structure: `contact_info` with `primary_email`, `additional_emails`, `phone`
 - [ ] Document has `profile` with `display_name`, `avatar`, `bio`, `date_of_birth`
-- [ ] After login: `updated_at` is refreshed
+- [ ] After update: `updated_at` is refreshed
+- [ ] After delete: `deleted_at` is set, document still exists
 
 ### Code Quality Checks
-- [ ] All methods have try/except error handling
-- [ ] ValueError used for business logic errors (not generic Exception)
-- [ ] Email normalized (lowercase, stripped) before every query
-- [ ] Kafka events emitted for: register, login, email_verified, password_reset_requested, password_reset
-- [ ] No raw MongoDB queries - all operations use Beanie ODM
+- [ ] `DuplicateError` used for email conflicts (not generic Exception)
+- [ ] `NotFoundError` used for missing users
+- [ ] Email normalized (lowercase, stripped) before uniqueness query
+- [ ] Kafka events emitted for: USER_CREATED, USER_UPDATED, USER_DELETED
+- [ ] All operations use Beanie ODM (no raw PyMongo queries)
 
 ---
 
@@ -949,30 +718,28 @@ db.users.insertOne({
 
 Does MongoDB reject the second insert? Why or why not?
 
-**Reflection:** How does the application currently prevent duplicates? (Answer: via `is_email_available()` check before insert). What's the weakness of this approach? (Answer: race condition - two requests could check simultaneously, both see the email is available, and both insert. A unique index would be the true safeguard.)
+**Reflection:** How does the application currently prevent duplicates? (Answer: via `find_one()` check before insert in `create_user()`). What's the weakness of this approach? (Answer: race condition - two requests could check simultaneously, both see the email is available, and both insert. A unique index would be the true safeguard.)
 
-### Challenge C: The Soft Delete Gap
+### Challenge C: The Soft Delete Filter
 
-Look at the login method. When a user is soft-deleted (`deleted_at is not None`), we reject the login. But we find the user first with:
-```python
-User.find_one({"contact_info.primary_email": email})
-```
+Look at `list_users`. It filters with `{"deleted_at": None}`. Now look at `get_user` - it fetches by `_id` first, then checks `deleted_at` in Python.
 
-This query does NOT filter by `deleted_at`. So we find deleted users, then check in Python. Is this efficient?
-
-How would you change the query to filter deleted users at the database level?
+**Question:** Why not add `deleted_at: None` to the `get_user` query instead?
 
 <details>
 <summary>Answer</summary>
 
+You could combine them:
 ```python
-user = await User.find_one({
-    "contact_info.primary_email": email,
-    "deleted_at": None
-})
+user = await User.find_one({"_id": PydanticObjectId(user_id), "deleted_at": None})
 ```
 
-This uses the `deleted_at` index and prevents loading deleted user documents into memory. However, the current approach has a UX benefit: we can show the specific error "Account no longer exists" instead of the generic "Invalid email or password". It's a tradeoff between efficiency and user experience.
+However, the current approach (fetch then check) works well for `_id` lookups because:
+- The `_id` lookup is already the fastest query possible (unique index)
+- Adding `deleted_at` filter doesn't improve performance for single-document lookups
+- Separating the checks lets you potentially return different errors (e.g., "User was deleted" vs "User not found")
+
+For `list_users`, filtering at the database level is essential because scanning and filtering many documents in Python would be wasteful.
 
 </details>
 
@@ -981,17 +748,18 @@ This uses the `deleted_at` index and prevents loading deleted user documents int
 ## 8. WHAT'S NEXT
 
 You've completed the foundation. You now understand:
-- `find_one()` for field-based lookups
+- `find_one()` for field-based lookups (email uniqueness)
 - `Document.get()` for `_id` lookups
 - `document.insert()` for creating documents
 - `document.save()` for updating documents
-- Embedded document construction
-- Which indexes support which queries
+- `find()` with filter + skip/limit for pagination
+- Embedded document construction (`ContactInfo`, `UserProfile`)
+- Soft delete pattern (`deleted_at` timestamp)
 
-**TASK 02: Supplier Authentication** will build on these concepts with:
+**TASK 02: Supplier Service** will build on these concepts with:
 - Deeper nesting (contact person info, company addresses, business info, banking info)
-- Cross-collection email uniqueness (checking both User and Supplier collections)
-- More embedded document types (5 embedded types vs User's 3)
-- Compound index usage (location-based supplier lookup)
+- More embedded document types (6 embedded types vs User's 3)
+- Multi-level partial updates (updating fields across different nested objects)
+- Hard delete (contrast with User's soft delete)
 
 The patterns you learned here - find → validate → act → emit - will repeat in every service you build. Master them now.

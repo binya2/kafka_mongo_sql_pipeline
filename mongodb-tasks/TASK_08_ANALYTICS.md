@@ -79,7 +79,7 @@ results = await collection.aggregate([
 
 ### Create Your Service File
 
-Create a new file: `apps/backend-service/src/services/analytics.py`
+Create a new file: `apps/mongo_backend/services/analytics.py`
 
 ```python
 """
@@ -95,7 +95,7 @@ from shared.models.product import Product
 from shared.models.user import User
 from shared.models.post import Post
 from shared.models.supplier import Supplier
-from src.utils.datetime_utils import utc_now
+from utils.datetime_utils import utc_now
 
 
 class AnalyticsService:
@@ -965,7 +965,7 @@ pipeline = [
 
 **Hint 1 - `$sortByCount` limitations**: It only gives you count. If you need additional metrics (price ranges, views), you must expand to the full `$group` + `$sort` pattern.
 
-**Hint 2 - ProductCategory enum**: The `category` field uses a `ProductCategory` enum with 11 values (electronics, fashion, beauty, etc.). The `$group` by `$category` will produce up to 11 buckets.
+**Hint 2 - ProductCategory enum**: The `category` field uses a `ProductCategory` enum with values like `electronics`, `fashion`, `beauty`, etc. The `$group` by `$category` will produce one bucket per unique category value.
 
 </details>
 
@@ -1365,11 +1365,11 @@ Congratulations! You've completed all tasks of the MongoDB Advanced Learning cou
 
 | Task | Domain | Key Skill |
 |------|--------|-----------|
-| 01 | User/Auth | CRUD basics, `find_one`, nested fields |
-| 02 | Supplier | Complex nested docs, array queries |
-| 04 | Product | `Dict` fields, cross-collection validation, status lifecycle |
-| 05 | Post | Cursor pagination with `$or` tiebreaker, `$inc` atomic counters |
-| 07 | Order | State machine, per-item fulfillment, product snapshot denormalization |
+| 01 | User | CRUD basics, `find_one`, nested fields, soft delete |
+| 02 | Supplier | Complex nested docs, array queries, hard delete |
+| 04 | Product | Cross-collection validation, status lifecycle state machine, back-references |
+| 05 | Post | Denormalized author snapshots, draft/publish lifecycle, skip/limit pagination |
+| 07 | Order | Cross-collection validation chain, product snapshot denormalization, status guards |
 | 08 | Analytics | **Aggregation pipelines**: `$group`, `$unwind`, `$lookup`, `$facet`, `$bucket` |
 
 ### MongoDB Mastery Checklist
@@ -1377,11 +1377,11 @@ Congratulations! You've completed all tasks of the MongoDB Advanced Learning cou
 After completing this course, you should be confident with:
 
 - [ ] **Query operators**: `$in`, `$ne`, `$gte`, `$lte`, `$or`, `$and`, `$lt`, `$gt`
-- [ ] **Update operators**: `$set` (via save), `$inc` for atomic counters
+- [ ] **Update patterns**: Partial update via `.save()`, status transitions
 - [ ] **Aggregation stages**: `$match`, `$group`, `$unwind`, `$lookup`, `$project`, `$addFields`, `$bucket`, `$facet`, `$sortByCount`, `$dateToString`
 - [ ] **Aggregation expressions**: `$sum`, `$avg`, `$min`, `$max`, `$first`, `$push`, `$addToSet`, `$size`, `$cond`, `$switch`, `$divide`, `$round`, `$toString`
 - [ ] **`$sum` dual usage**: As accumulator in `$group` (sum across docs) vs as expression in `$addFields` (sum within array)
-- [ ] **Pagination**: Cursor-based with `$or` tiebreaker (ascending `$gt`, descending `$lt`)
-- [ ] **Data patterns**: Denormalization, snapshots, soft delete
+- [ ] **Pagination**: Skip/limit with sort and optional filters
+- [ ] **Data patterns**: Denormalization (author/customer/product snapshots), soft delete, status-based lifecycle
 - [ ] **Indexing**: Understanding compound indexes and how `$match` uses them
-- [ ] **Design patterns**: Anti-enumeration, state machines, cross-collection validation
+- [ ] **Design patterns**: Cross-collection validation, status guards, utility function delegation
