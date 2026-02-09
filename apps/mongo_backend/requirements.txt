@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+motor
+beanie
+pydantic
+pydantic[email]
+confluent-kafka
+bcrypt
