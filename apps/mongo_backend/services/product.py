@@ -29,48 +29,25 @@ class ProductService:
 
     @staticmethod
     def _build_topic_descriptions(items: list) -> list[TopicDescription]:
-        return [
-            TopicDescription(topic=td.topic, description=td.description, display_order=td.display_order)
-            for td in items
-        ]
+        # TODO: Implement _build_topic_descriptions
+        # Convert a list of request objects into TopicDescription embedded documents
+        # Each item has: topic, description, display_order
+        pass
 
     @staticmethod
     def _build_stock_locations(items: list) -> list[StockLocation]:
-        return [
-            StockLocation(
-                location_name=sl.location_name,
-                street_address=sl.street_address,
-                city=sl.city,
-                state=sl.state,
-                zip_code=sl.zip_code,
-                country=sl.country,
-                quantity=sl.quantity,
-            )
-            for sl in items
-        ]
+        # TODO: Implement _build_stock_locations
+        # Convert a list of request objects into StockLocation embedded documents
+        # Each item has: location_name, street_address, city, state, zip_code, country, quantity
+        pass
 
     @staticmethod
     def _build_variants(variants_dict: dict) -> dict[str, ProductVariant]:
-        variants = {}
-        for key, vr in variants_dict.items():
-            variants[key] = ProductVariant(
-                variant_id=vr.variant_id,
-                variant_name=vr.variant_name,
-                attributes=[
-                    VariantAttribute(attribute_name=a.attribute_name, attribute_value=a.attribute_value)
-                    for a in vr.attributes
-                ],
-                price_cents=vr.price_cents,
-                cost_cents=vr.cost_cents,
-                quantity=vr.quantity,
-                package_dimensions=PackageDimensions(
-                    width_cm=vr.package_dimensions.width_cm,
-                    height_cm=vr.package_dimensions.height_cm,
-                    depth_cm=vr.package_dimensions.depth_cm,
-                ),
-                image_url=vr.image_url,
-            )
-        return variants
+        # TODO: Implement _build_variants
+        # Convert a dict of request objects into ProductVariant embedded documents
+        # Each variant has: variant_id, variant_name, attributes (list of VariantAttribute),
+        #   price_cents, cost_cents, quantity, package_dimensions (PackageDimensions), image_url
+        pass
 
     # ----------------------------------------------------------------
     # CRUD
@@ -78,46 +55,28 @@ class ProductService:
 
     async def create_product(self, supplier_id: str, body) -> Product:
         """Create a product in draft status. `body` is a CreateProductRequest."""
-        try:
-            supplier = await Supplier.get(PydanticObjectId(supplier_id))
-        except Exception:
-            raise NotFoundError("Supplier not found")
-        if not supplier:
-            raise NotFoundError("Supplier not found")
-
-        product = Product(
-            supplier_id=PydanticObjectId(supplier_id),
-            supplier_info={"name": supplier.company_info.legal_name},
-            name=body.name,
-            short_description=body.short_description,
-            topic_descriptions=self._build_topic_descriptions(body.topic_descriptions),
-            category=ProductCategory(body.category),
-            unit_type=UnitType(body.unit_type),
-            metadata=ProductMetadata(base_sku=body.base_sku, brand=body.brand),
-            stock_locations=self._build_stock_locations(body.stock_locations),
-            variants=self._build_variants(body.variants),
-            base_price_cents=body.base_price_cents,
-        )
-        await product.insert()
-
-        supplier.product_ids.append(product.id)
-        await supplier.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_CREATED,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement create_product
+        # 1. Validate supplier exists using Supplier.get()
+        # 2. Build Product document with all fields from body:
+        #    - supplier_id, supplier_info (from supplier's company_info)
+        #    - name, short_description, topic_descriptions (use helper)
+        #    - category (ProductCategory), unit_type (UnitType)
+        #    - metadata (ProductMetadata with base_sku, brand)
+        #    - stock_locations (use helper), variants (use helper)
+        #    - base_price_cents
+        # 3. Insert into MongoDB
+        # 4. Append product.id to supplier.product_ids and save supplier
+        # 5. Emit PRODUCT_CREATED Kafka event
+        # 6. Return the created product
+        pass
 
     async def get_product(self, product_id: str) -> Product:
-        try:
-            product = await Product.get(PydanticObjectId(product_id))
-        except Exception:
-            raise NotFoundError("Product not found")
-        if not product or product.status == ProductStatus.DELETED:
-            raise NotFoundError("Product not found")
-        return product
+        # TODO: Implement get_product
+        # 1. Fetch product by ID using Product.get()
+        # 2. Handle invalid ObjectId (raise NotFoundError)
+        # 3. Check product exists and status is not DELETED
+        # 4. Return the product
+        pass
 
     async def list_products(
         self,
@@ -127,139 +86,76 @@ class ProductService:
         category: Optional[str] = None,
         supplier_id: Optional[str] = None,
     ) -> list[Product]:
-        query: dict = {"status": {"$ne": ProductStatus.DELETED}}
-
-        if status_filter:
-            statuses = [s.strip() for s in status_filter.split(",")]
-            query["status"] = {"$in": statuses}
-        if category:
-            query["category"] = category
-        if supplier_id:
-            query["supplier_id"] = PydanticObjectId(supplier_id)
-
-        return (
-            await Product.find(query)
-            .sort("-created_at")
-            .skip(skip)
-            .limit(min(limit, 100))
-            .to_list()
-        )
+        # TODO: Implement list_products
+        # 1. Build query: exclude DELETED products by default
+        # 2. If status_filter provided, parse comma-separated statuses into $in query
+        # 3. If category provided, add to query
+        # 4. If supplier_id provided, add to query (convert to PydanticObjectId)
+        # 5. Sort by -created_at, apply skip/limit (cap at 100)
+        # 6. Return the list
+        pass
 
     async def update_product(self, product_id: str, body) -> Product:
         """Partial update. `body` is an UpdateProductRequest."""
-        product = await self.get_product(product_id)
-
-        if body.name is not None:
-            product.name = body.name
-        if body.short_description is not None:
-            product.short_description = body.short_description
-        if body.category is not None:
-            product.category = ProductCategory(body.category)
-        if body.base_price_cents is not None:
-            product.base_price_cents = body.base_price_cents
-        if body.base_sku is not None:
-            product.metadata.base_sku = body.base_sku
-        if body.brand is not None:
-            product.metadata.brand = body.brand
-        if body.topic_descriptions is not None:
-            product.topic_descriptions = self._build_topic_descriptions(body.topic_descriptions)
-        if body.stock_locations is not None:
-            product.stock_locations = self._build_stock_locations(body.stock_locations)
-        if body.variants is not None:
-            product.variants = self._build_variants(body.variants)
-
-        await product.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_UPDATED,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement update_product
+        # 1. Fetch the product using get_product
+        # 2. Update only the provided fields:
+        #    name, short_description, category, base_price_cents,
+        #    base_sku, brand, topic_descriptions, stock_locations, variants
+        # 3. Save the updated document
+        # 4. Emit PRODUCT_UPDATED Kafka event
+        # 5. Return the updated product
+        pass
 
     async def delete_product(self, product_id: str) -> None:
-        product = await self.get_product(product_id)
-        product.status = ProductStatus.DELETED
-        await product.save()
-
-        try:
-            supplier = await Supplier.get(product.supplier_id)
-            if supplier and product.id in supplier.product_ids:
-                supplier.product_ids.remove(product.id)
-                await supplier.save()
-        except Exception:
-            pass
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_DELETED,
-            entity_id=oid_to_str(product.id),
-            data={"product_id": oid_to_str(product.id)},
-        )
+        # TODO: Implement delete_product (soft delete via status)
+        # 1. Fetch the product using get_product
+        # 2. Set status to ProductStatus.DELETED
+        # 3. Save the document
+        # 4. Remove product.id from supplier.product_ids (handle errors gracefully)
+        # 5. Emit PRODUCT_DELETED Kafka event
+        pass
 
     # ----------------------------------------------------------------
     # Lifecycle
     # ----------------------------------------------------------------
 
     async def publish_product(self, product_id: str) -> Product:
-        product = await self.get_product(product_id)
-        if product.status != ProductStatus.DRAFT:
-            raise ValidationError("Only draft products can be published")
-
-        product.status = ProductStatus.ACTIVE
-        product.published_at = utc_now()
-        await product.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_PUBLISHED,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement publish_product
+        # 1. Fetch the product using get_product
+        # 2. Validate status is DRAFT (raise ValidationError otherwise)
+        # 3. Set status to ACTIVE and published_at to current UTC time
+        # 4. Save the document
+        # 5. Emit PRODUCT_PUBLISHED Kafka event
+        # 6. Return the updated product
+        pass
 
     async def discontinue_product(self, product_id: str) -> Product:
-        product = await self.get_product(product_id)
-        if product.status not in (ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK):
-            raise ValidationError("Only active or out-of-stock products can be discontinued")
-
-        product.status = ProductStatus.DISCONTINUED
-        await product.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_DISCONTINUED,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement discontinue_product
+        # 1. Fetch the product using get_product
+        # 2. Validate status is ACTIVE or OUT_OF_STOCK (raise ValidationError otherwise)
+        # 3. Set status to DISCONTINUED
+        # 4. Save the document
+        # 5. Emit PRODUCT_DISCONTINUED Kafka event
+        # 6. Return the updated product
+        pass
 
     async def mark_out_of_stock(self, product_id: str) -> Product:
-        product = await self.get_product(product_id)
-        if product.status != ProductStatus.ACTIVE:
-            raise ValidationError("Only active products can be marked out of stock")
-
-        product.status = ProductStatus.OUT_OF_STOCK
-        await product.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_OUT_OF_STOCK,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement mark_out_of_stock
+        # 1. Fetch the product using get_product
+        # 2. Validate status is ACTIVE (raise ValidationError otherwise)
+        # 3. Set status to OUT_OF_STOCK
+        # 4. Save the document
+        # 5. Emit PRODUCT_OUT_OF_STOCK Kafka event
+        # 6. Return the updated product
+        pass
 
     async def restore_product(self, product_id: str) -> Product:
-        try:
-            product = await Product.get(PydanticObjectId(product_id))
-        except Exception:
-            raise NotFoundError("Product not found")
-        if not product:
-            raise NotFoundError("Product not found")
-
-        product.status = ProductStatus.DRAFT
-        await product.save()
-
-        self._kafka.emit(
-            event_type=EventType.PRODUCT_RESTORED,
-            entity_id=oid_to_str(product.id),
-            data=product.model_dump(mode="json"),
-        )
-        return product
+        # TODO: Implement restore_product
+        # 1. Fetch product by ID using Product.get() (include deleted ones)
+        # 2. Handle not found
+        # 3. Set status back to DRAFT
+        # 4. Save the document
+        # 5. Emit PRODUCT_RESTORED Kafka event
+        # 6. Return the updated product
+        pass

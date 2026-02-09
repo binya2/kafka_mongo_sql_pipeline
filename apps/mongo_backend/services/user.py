@@ -35,41 +35,29 @@ class UserService:
         phone: Optional[str] = None,
         bio: Optional[str] = None,
     ) -> User:
-        email = email.lower().strip()
-        existing = await User.find_one({"contact_info.primary_email": email})
-        if existing:
-            raise DuplicateError("Email already in use")
-
-        user = User(
-            password_hash=hash_password(password),
-            contact_info=ContactInfo(primary_email=email, phone=phone),
-            profile=UserProfile(display_name=display_name, bio=bio),
-        )
-        await user.insert()
-
-        self._kafka.emit(
-            event_type=EventType.USER_CREATED,
-            entity_id=oid_to_str(user.id),
-            data=user.model_dump(mode="json"),
-        )
-        return user
+        # TODO: Implement create_user
+        # 1. Normalize email (lowercase, strip)
+        # 2. Check for duplicate email using find_one
+        # 3. Create User document with hashed password, ContactInfo, UserProfile
+        # 4. Insert into MongoDB
+        # 5. Emit USER_CREATED Kafka event
+        # 6. Return the created user
+        pass
 
     async def get_user(self, user_id: str) -> User:
-        try:
-            user = await User.get(PydanticObjectId(user_id))
-        except Exception:
-            raise NotFoundError("User not found")
-        if not user or user.deleted_at:
-            raise NotFoundError("User not found")
-        return user
+        # TODO: Implement get_user
+        # 1. Fetch user by ID using User.get()
+        # 2. Handle invalid ObjectId (raise NotFoundError)
+        # 3. Check user exists and is not soft-deleted
+        # 4. Return the user
+        pass
 
     async def list_users(self, skip: int = 0, limit: int = 20) -> list[User]:
-        return (
-            await User.find({"deleted_at": None})
-            .skip(skip)
-            .limit(min(limit, 100))
-            .to_list()
-        )
+        # TODO: Implement list_users
+        # 1. Query for users where deleted_at is None
+        # 2. Apply skip/limit pagination (cap limit at 100)
+        # 3. Return the list
+        pass
 
     async def update_user(
         self,
@@ -79,36 +67,21 @@ class UserService:
         bio: Optional[str] = None,
         avatar: Optional[str] = None,
     ) -> User:
-        user = await self.get_user(user_id)
-
-        if display_name is not None:
-            user.profile.display_name = display_name
-        if phone is not None:
-            user.contact_info.phone = phone
-        if bio is not None:
-            user.profile.bio = bio
-        if avatar is not None:
-            user.profile.avatar = avatar
-
-        await user.save()
-
-        self._kafka.emit(
-            event_type=EventType.USER_UPDATED,
-            entity_id=oid_to_str(user.id),
-            data=user.model_dump(mode="json"),
-        )
-        return user
+        # TODO: Implement update_user
+        # 1. Fetch the user using get_user
+        # 2. Update only the provided fields (display_name, phone, bio, avatar)
+        # 3. Save the updated document
+        # 4. Emit USER_UPDATED Kafka event
+        # 5. Return the updated user
+        pass
 
     async def delete_user(self, user_id: str) -> None:
-        user = await self.get_user(user_id)
-        user.deleted_at = utc_now()
-        await user.save()
-
-        self._kafka.emit(
-            event_type=EventType.USER_DELETED,
-            entity_id=oid_to_str(user.id),
-            data={"user_id": oid_to_str(user.id)},
-        )
+        # TODO: Implement delete_user (soft delete)
+        # 1. Fetch the user using get_user
+        # 2. Set deleted_at to current UTC time
+        # 3. Save the document
+        # 4. Emit USER_DELETED Kafka event
+        pass
 
     # ----------------------------------------------------------------
     # Supplier
@@ -116,102 +89,34 @@ class UserService:
 
     async def create_supplier(self, body) -> Supplier:
         """Create a new supplier. `body` is a CreateSupplierRequest."""
-        email = body.contact_info.primary_email.lower().strip()
-        existing = await Supplier.find_one({"contact_info.primary_email": email})
-        if existing:
-            raise DuplicateError("Email already in use")
-
-        ci = body.contact_info
-        contact_info = SupplierContactInfo(
-            primary_email=email,
-            additional_emails=ci.additional_emails,
-            primary_phone=ci.primary_phone,
-            contact_person_name=ci.contact_person_name,
-            contact_person_title=ci.contact_person_title,
-            contact_person_email=ci.contact_person_email,
-            contact_person_phone=ci.contact_person_phone,
-        )
-
-        addr = body.company_info.business_address
-        business_address = CompanyAddress(
-            street_address_1=addr.street_address_1,
-            street_address_2=addr.street_address_2,
-            city=addr.city,
-            state=addr.state,
-            zip_code=addr.zip_code,
-            country=addr.country,
-        )
-
-        shipping_address = None
-        if body.company_info.shipping_address:
-            sa = body.company_info.shipping_address
-            shipping_address = CompanyAddress(
-                street_address_1=sa.street_address_1,
-                street_address_2=sa.street_address_2,
-                city=sa.city,
-                state=sa.state,
-                zip_code=sa.zip_code,
-                country=sa.country,
-            )
-
-        company_info = CompanyInfo(
-            legal_name=body.company_info.legal_name,
-            dba_name=body.company_info.dba_name,
-            business_address=business_address,
-            shipping_address=shipping_address,
-        )
-
-        bi = body.business_info
-        business_info = BusinessInfo(
-            facebook_url=bi.facebook_url,
-            instagram_handle=bi.instagram_handle,
-            twitter_handle=bi.twitter_handle,
-            linkedin_url=bi.linkedin_url,
-            timezone=bi.timezone,
-            support_email=bi.support_email,
-            support_phone=bi.support_phone,
-        )
-
-        banking_info = None
-        if body.banking_info:
-            banking_info = BankingInfo(
-                bank_name=body.banking_info.bank_name,
-                account_holder_name=body.banking_info.account_holder_name,
-                account_number_last4=body.banking_info.account_number_last4,
-            )
-
-        supplier = Supplier(
-            password_hash=hash_password(body.password),
-            contact_info=contact_info,
-            company_info=company_info,
-            business_info=business_info,
-            banking_info=banking_info,
-        )
-        await supplier.insert()
-
-        self._kafka.emit(
-            event_type=EventType.SUPPLIER_CREATED,
-            entity_id=oid_to_str(supplier.id),
-            data=supplier.model_dump(mode="json"),
-        )
-        return supplier
+        # TODO: Implement create_supplier
+        # 1. Normalize email (lowercase, strip)
+        # 2. Check for duplicate email using find_one
+        # 3. Build SupplierContactInfo from body.contact_info
+        # 4. Build CompanyAddress for business_address (and optionally shipping_address)
+        # 5. Build CompanyInfo with legal_name, dba_name, and addresses
+        # 6. Build BusinessInfo from body.business_info
+        # 7. Build BankingInfo if provided
+        # 8. Create Supplier document with hashed password and all info objects
+        # 9. Insert into MongoDB
+        # 10. Emit SUPPLIER_CREATED Kafka event
+        # 11. Return the created supplier
+        pass
 
     async def get_supplier(self, supplier_id: str) -> Supplier:
-        try:
-            supplier = await Supplier.get(PydanticObjectId(supplier_id))
-        except Exception:
-            raise NotFoundError("Supplier not found")
-        if not supplier:
-            raise NotFoundError("Supplier not found")
-        return supplier
+        # TODO: Implement get_supplier
+        # 1. Fetch supplier by ID using Supplier.get()
+        # 2. Handle invalid ObjectId (raise NotFoundError)
+        # 3. Check supplier exists
+        # 4. Return the supplier
+        pass
 
     async def list_suppliers(self, skip: int = 0, limit: int = 20) -> list[Supplier]:
-        return (
-            await Supplier.find_all()
-            .skip(skip)
-            .limit(min(limit, 100))
-            .to_list()
-        )
+        # TODO: Implement list_suppliers
+        # 1. Query all suppliers using find_all()
+        # 2. Apply skip/limit pagination (cap limit at 100)
+        # 3. Return the list
+        pass
 
     async def update_supplier(
         self,
@@ -222,34 +127,17 @@ class UserService:
         support_email: Optional[str] = None,
         support_phone: Optional[str] = None,
     ) -> Supplier:
-        supplier = await self.get_supplier(supplier_id)
-
-        if primary_phone is not None:
-            supplier.contact_info.primary_phone = primary_phone
-        if legal_name is not None:
-            supplier.company_info.legal_name = legal_name
-        if dba_name is not None:
-            supplier.company_info.dba_name = dba_name
-        if support_email is not None:
-            supplier.business_info.support_email = support_email
-        if support_phone is not None:
-            supplier.business_info.support_phone = support_phone
-
-        await supplier.save()
-
-        self._kafka.emit(
-            event_type=EventType.SUPPLIER_UPDATED,
-            entity_id=oid_to_str(supplier.id),
-            data=supplier.model_dump(mode="json"),
-        )
-        return supplier
+        # TODO: Implement update_supplier
+        # 1. Fetch the supplier using get_supplier
+        # 2. Update only the provided fields on the appropriate nested objects
+        # 3. Save the updated document
+        # 4. Emit SUPPLIER_UPDATED Kafka event
+        # 5. Return the updated supplier
+        pass
 
     async def delete_supplier(self, supplier_id: str) -> None:
-        supplier = await self.get_supplier(supplier_id)
-        await supplier.delete()
-
-        self._kafka.emit(
-            event_type=EventType.SUPPLIER_DELETED,
-            entity_id=oid_to_str(supplier.id),
-            data={"supplier_id": oid_to_str(supplier.id)},
-        )
+        # TODO: Implement delete_supplier (hard delete)
+        # 1. Fetch the supplier using get_supplier
+        # 2. Delete the document from MongoDB
+        # 3. Emit SUPPLIER_DELETED Kafka event
+        pass

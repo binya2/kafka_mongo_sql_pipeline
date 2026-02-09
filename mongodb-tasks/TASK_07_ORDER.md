@@ -580,26 +580,7 @@ self._kafka.emit(
 
 > **Hint Level 2**: Use `ValidationError` (not `ValueError`) from `shared.errors`. The `reason` parameter is received but not stored on the Order model in the current implementation - it's available for logging/event data if needed.
 
-<details>
-<summary>Hint Level 3 - Full Implementation</summary>
-
-```python
-async def cancel_order(self, order_id: str, reason: str) -> Order:
-    order = await self.get_order(order_id)
-    if order.status not in (OrderStatus.PENDING, OrderStatus.CONFIRMED):
-        raise ValidationError("Only pending or confirmed orders can be cancelled")
-
-    order.status = OrderStatus.CANCELLED
-    await order.save()
-
-    self._kafka.emit(
-        event_type=EventType.ORDER_CANCELLED,
-        entity_id=oid_to_str(order.id),
-        data={"order_number": order.order_number},
-    )
-    return order
-```
-</details>
+<!-- TODO: Implement cancel_order -->
 
 #### Verify
 

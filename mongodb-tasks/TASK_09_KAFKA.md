@@ -178,14 +178,7 @@ Read the `KafkaProducer` class and answer these questions:
 # (Hint: Think about connection pooling and config consistency)
 ```
 
-<details>
-<summary>Answers</summary>
-
-1. `emit()` wraps the data in an **event envelope** with `event_type`, `event_id` (UUID), `timestamp` (ISO8601), `entity_id`, and `data`. `send()` just sends raw JSON to a topic.
-2. `emit()` extracts the topic from the event_type string by taking the first part before the dot: `"order.created"` -> topic `"order"`.
-3. `entity_id` is used as the partition key. This means all events for the same entity (e.g., the same order) go to the same partition, guaranteeing they're processed in order by any single consumer.
-4. The singleton ensures only one Kafka connection is created and shared across all services, avoiding connection overhead.
-</details>
+<!-- TODO: Answer these questions by studying the code -->
 
 #### 1b. Map All Emit Calls
 
@@ -260,14 +253,7 @@ consumer.start()
 # Q: What happens in the poll loop when a message has no registered handler?
 ```
 
-<details>
-<summary>Answers</summary>
-
-- The consumer config includes: `auto.offset.reset: "earliest"` (start from beginning for new groups), `enable.auto.commit: True`, `auto.commit.interval.ms: 5000`
-- 18 handlers total (3 user + 3 supplier + 7 product + 2 order + 4 post)
-- Subscribing to all topics means this single consumer service handles events from every domain
-- Messages with no registered handler are logged at debug level and skipped
-</details>
+<!-- TODO: Answer these questions by studying the code -->
 
 #### 2b. Trace Message Processing
 

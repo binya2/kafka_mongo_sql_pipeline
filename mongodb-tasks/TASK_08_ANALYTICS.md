@@ -227,50 +227,8 @@ async def revenue_by_supplier(
 **The Pipeline:**
 
 ```python
-pipeline = []
-
-# Stage 1: $match - Filter to confirmed/delivered orders
-match_filter = {
-    "status": {"$in": ["confirmed", "processing", "shipped", "delivered"]}
-}
-if start_date:
-    match_filter["created_at"] = {"$gte": start_date}
-if end_date:
-    match_filter.setdefault("created_at", {})["$lte"] = end_date
-
-pipeline.append({"$match": match_filter})
-
-# Stage 2: $unwind - Flatten items array
-# Each order has multiple items, possibly from different suppliers
-pipeline.append({"$unwind": "$items"})
-
-# Stage 3: $group - Group by supplier_id, sum revenue
-pipeline.append({"$group": {
-    "_id": "$items.product_snapshot.supplier_id",
-    "total_revenue_cents": {"$sum": "$items.total_cents"},
-    "total_items_sold": {"$sum": "$items.quantity"},
-    "order_count": {"$sum": 1},
-    "avg_item_value_cents": {"$avg": "$items.total_cents"},
-    "supplier_name": {"$first": "$items.product_snapshot.supplier_name"}
-}})
-
-# Stage 4: $sort - Highest revenue first
-pipeline.append({"$sort": {"total_revenue_cents": -1}})
-
-# Stage 5: $project - Clean up output
-pipeline.append({"$project": {
-    "_id": 0,
-    "supplier_id": {"$toString": "$_id"},
-    "supplier_name": 1,
-    "total_revenue_cents": 1,
-    "total_revenue_dollars": {"$divide": ["$total_revenue_cents", 100]},
-    "total_items_sold": 1,
-    "order_count": 1,
-    "avg_item_value_cents": {"$round": ["$avg_item_value_cents", 0]}
-}})
-
-results = await Order.aggregate(pipeline).to_list()
-return results
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Breaking down the key stages:**
@@ -286,16 +244,7 @@ return results
 
 **`$project` with `$divide` and `$round`**: These are **aggregation expressions** that compute new fields. `$divide: ["$total_revenue_cents", 100]` converts cents to dollars. `$round: ["$avg_item_value_cents", 0]` rounds to integer.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - Date range**: Build the `$match` filter conditionally. If both dates are provided, `created_at` should have both `$gte` and `$lte`. If only one, just that condition.
-
-**Hint 2 - $toString**: The `_id` from `$group` is an ObjectId. `$toString` converts it to a string for clean output. This is a `$project`-stage expression.
-
-**Hint 3 - Index**: The `$match` stage can use the `[("status", 1), ("created_at", -1)]` index. The `$unwind` and `$group` stages work in memory after the match filters the data.
-
-</details>
+<!-- TODO: Implement this -->
 
 **Expected Output:**
 ```json
@@ -329,46 +278,8 @@ async def top_products_by_order_count(self, limit: int = 10) -> List[Dict]:
 **The Pipeline:**
 
 ```python
-pipeline = [
-    # Stage 1: Only confirmed+ orders
-    {"$match": {
-        "status": {"$in": ["confirmed", "processing", "shipped", "delivered"]}
-    }},
-
-    # Stage 2: Flatten items
-    {"$unwind": "$items"},
-
-    # Stage 3: Group by product_id
-    {"$group": {
-        "_id": "$items.product_snapshot.product_id",
-        "product_name": {"$first": "$items.product_snapshot.product_name"},
-        "supplier_name": {"$first": "$items.product_snapshot.supplier_name"},
-        "times_ordered": {"$sum": 1},
-        "total_quantity": {"$sum": "$items.quantity"},
-        "total_revenue_cents": {"$sum": "$items.total_cents"},
-        "avg_quantity_per_order": {"$avg": "$items.quantity"}
-    }},
-
-    # Stage 4: Sort by times ordered
-    {"$sort": {"times_ordered": -1}},
-
-    # Stage 5: Limit
-    {"$limit": limit},
-
-    # Stage 6: Clean output
-    {"$project": {
-        "_id": 0,
-        "product_id": {"$toString": "$_id"},
-        "product_name": 1,
-        "supplier_name": 1,
-        "times_ordered": 1,
-        "total_quantity": 1,
-        "total_revenue_cents": 1,
-        "avg_quantity_per_order": {"$round": ["$avg_quantity_per_order", 1]}
-    }}
-]
-
-return await Order.aggregate(pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Key teaching point - `$unwind` before `$group`:**
@@ -389,14 +300,7 @@ After $group by product_id:
 
 Without `$unwind`, you couldn't count individual products across orders because each order contains an array of items.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - `$limit` placement**: Always put `$limit` AFTER `$sort`. If you limit before sorting, you get an arbitrary subset.
-
-**Hint 2 - `times_ordered` vs `total_quantity`**: `$sum: 1` counts how many orders include this product. `$sum: "$items.quantity"` sums up the actual quantities. A product ordered 3 times with quantities 2, 1, 5 has `times_ordered=3` and `total_quantity=8`.
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
@@ -416,79 +320,8 @@ async def orders_with_product_details(
 **The Pipeline (using raw motor for cross-collection `$lookup`):**
 
 ```python
-collection = Order.get_motor_collection()
-
-pipeline = [
-    # Stage 1: Filter to orders containing this supplier's products
-    {"$match": {
-        "items.product_snapshot.supplier_id": PydanticObjectId(supplier_id),
-        "status": {"$in": ["confirmed", "processing", "shipped", "delivered"]}
-    }},
-
-    # Stage 2: Sort newest first
-    {"$sort": {"created_at": -1}},
-
-    # Stage 3: Limit
-    {"$limit": limit},
-
-    # Stage 4: Unwind items to join per-item
-    {"$unwind": "$items"},
-
-    # Stage 5: Filter to only this supplier's items
-    {"$match": {
-        "items.product_snapshot.supplier_id": PydanticObjectId(supplier_id)
-    }},
-
-    # Stage 6: $lookup - Join with products collection
-    {"$lookup": {
-        "from": "products",
-        "localField": "items.product_snapshot.product_id",
-        "foreignField": "_id",
-        "as": "current_product"
-    }},
-
-    # Stage 7: Unwind the lookup result (0 or 1 match)
-    {"$unwind": {
-        "path": "$current_product",
-        "preserveNullAndEmptyArrays": True
-    }},
-
-    # Stage 8: Project final shape
-    {"$project": {
-        "_id": 0,
-        "order_id": {"$toString": "$_id"},
-        "order_number": 1,
-        "order_status": "$status",
-        "order_date": "$created_at",
-        "customer_name": "$customer.display_name",
-
-        # Snapshot data (at purchase time)
-        "snapshot_product_name": "$items.product_snapshot.product_name",
-        "snapshot_price_cents": "$items.unit_price_cents",
-        "quantity": "$items.quantity",
-        "total_cents": "$items.total_cents",
-        "fulfillment_status": "$items.fulfillment_status",
-
-        # Current product data (from $lookup)
-        "current_product_name": "$current_product.name",
-        "current_price_cents": "$current_product.base_price_cents",
-        "current_status": "$current_product.status",
-        "product_still_exists": {"$cond": {
-            "if": {"$ifNull": ["$current_product", false]},
-            "then": true,
-            "else": false
-        }},
-
-        # Price drift
-        "price_changed": {"$ne": [
-            "$items.unit_price_cents",
-            "$current_product.base_price_cents"
-        ]}
-    }}
-]
-
-results = await collection.aggregate(pipeline).to_list(length=None)
-return results
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Understanding `$lookup`:**
@@ -516,16 +349,7 @@ Result: each order item gets a "current_product" array
 
 **`preserveNullAndEmptyArrays: True`**: Without this, orders for deleted products would be dropped from the results. With it, `current_product` is `null` for deleted products - which is exactly what we want (we can show "Product no longer available").
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - Raw motor**: Use `Order.get_motor_collection()` for cross-collection lookups. Beanie's `.aggregate()` works too but motor gives you more control.
-
-**Hint 2 - Double $match**: The first `$match` filters orders (uses index). After `$unwind`, the second `$match` filters items within those orders to only this supplier's products. This is a common pattern: filter at collection level, then filter at array element level.
-
-**Hint 3 - `$cond` and `$ifNull`**: These are aggregation expressions for conditional logic. `$ifNull: ["$field", default]` returns the field's value if it exists, or the default. `$cond: {if, then, else}` is a ternary operator.
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
@@ -543,82 +367,8 @@ async def post_engagement_report(self) -> List[Dict]:
 **The Pipeline:**
 
 ```python
-pipeline = [
-    # Stage 1: Filter to published, non-deleted posts with views
-    {"$match": {
-        "published_at": {"$ne": None},
-        "deleted_at": None,
-        "stats.view_count": {"$gt": 0}
-    }},
-
-    # Stage 2: Add computed engagement fields
-    {"$addFields": {
-        # Like-to-view rate (percentage)
-        "like_rate": {
-            "$multiply": [
-                {"$divide": ["$stats.like_count", "$stats.view_count"]},
-                100
-            ]
-        },
-        # Comment-to-view rate (percentage)
-        "comment_rate": {
-            "$cond": {
-                "if": {"$gt": ["$stats.view_count", 0]},
-                "then": {"$multiply": [
-                    {"$divide": ["$stats.comment_count", "$stats.view_count"]},
-                    100
-                ]},
-                "else": 0
-            }
-        },
-        # Total interactions (likes + comments + shares + saves)
-        "total_interactions": {
-            "$add": [
-                "$stats.like_count",
-                "$stats.comment_count",
-                "$stats.share_count",
-                "$stats.save_count"
-            ]
-        },
-        # Engagement tier
-        "engagement_tier": {
-            "$switch": {
-                "branches": [
-                    {"case": {"$gte": ["$stats.like_count", 100]}, "then": "viral"},
-                    {"case": {"$gte": ["$stats.like_count", 50]}, "then": "high"},
-                    {"case": {"$gte": ["$stats.like_count", 10]}, "then": "medium"},
-                ],
-                "default": "low"
-            }
-        }
-    }},
-
-    # Stage 3: Sort by total interactions
-    {"$sort": {"total_interactions": -1}},
-
-    # Stage 4: Project final shape
-    {"$project": {
-        "_id": 0,
-        "post_id": {"$toString": "$_id"},
-        "post_type": 1,
-        "author_name": "$author.display_name",
-        "author_type": "$author.author_type",
-        "text_preview": {"$substr": ["$text_content", 0, 80]},
-        "views": "$stats.view_count",
-        "likes": "$stats.like_count",
-        "comments": "$stats.comment_count",
-        "shares": "$stats.share_count",
-        "saves": "$stats.save_count",
-        "total_interactions": 1,
-        "like_rate_percent": {"$round": ["$like_rate", 2]},
-        "comment_rate_percent": {"$round": ["$comment_rate", 2]},
-        "engagement_rate": {"$round": ["$stats.engagement_rate", 2]},
-        "engagement_tier": 1,
-        "published_at": 1
-    }}
-]
-
-return await Post.aggregate(pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Key aggregation expressions:**
@@ -631,16 +381,7 @@ return await Post.aggregate(pipeline).to_list()
 
 **`$substr`**: Extracts a substring. `$substr: ["$text_content", 0, 80]` takes the first 80 characters as a preview.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - Division by zero**: Always guard `$divide` with a `$cond` that checks the denominator is `> 0`. MongoDB will error on division by zero. In this exercise, the `$match` already filters for `view_count > 0`, so the like_rate computation is safe without `$cond`. But the comment_rate example shows the guard pattern for reference.
-
-**Hint 2 - `$round`**: `$round: [value, places]` rounds to N decimal places. `$round: ["$like_rate", 2]` gives "12.34" instead of "12.341592...".
-
-**Hint 3 - $addFields then $project**: The two-stage approach is cleaner than doing everything in `$project`. First compute intermediate values (`$addFields`), then select and format final output (`$project`).
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
@@ -658,65 +399,8 @@ async def product_price_distribution(self) -> List[Dict]:
 **The Pipeline:**
 
 ```python
-pipeline = [
-    # Stage 1: Only active products
-    {"$match": {
-        "status": "active"
-    }},
-
-    # Stage 2: $bucket - Group into price ranges
-    {"$bucket": {
-        "groupBy": "$base_price_cents",
-        "boundaries": [0, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 1000000],
-        # Boundaries: $0, $10, $25, $50, $100, $250, $500, $1000, $10000
-        "default": "1000000+",  # Catches anything above $10,000
-        "output": {
-            "count": {"$sum": 1},
-            "avg_price_cents": {"$avg": "$base_price_cents"},
-            "min_price_cents": {"$min": "$base_price_cents"},
-            "max_price_cents": {"$max": "$base_price_cents"},
-            "categories": {"$addToSet": "$category"},
-            "products": {"$push": {
-                "name": "$name",
-                "price_cents": "$base_price_cents",
-                "category": "$category"
-            }}
-        }
-    }},
-
-    # Stage 3: Add human-readable labels
-    {"$addFields": {
-        "price_range": {
-            "$switch": {
-                "branches": [
-                    {"case": {"$eq": ["$_id", 0]}, "then": "$0 - $9.99"},
-                    {"case": {"$eq": ["$_id", 1000]}, "then": "$10 - $24.99"},
-                    {"case": {"$eq": ["$_id", 2500]}, "then": "$25 - $49.99"},
-                    {"case": {"$eq": ["$_id", 5000]}, "then": "$50 - $99.99"},
-                    {"case": {"$eq": ["$_id", 10000]}, "then": "$100 - $249.99"},
-                    {"case": {"$eq": ["$_id", 25000]}, "then": "$250 - $499.99"},
-                    {"case": {"$eq": ["$_id", 50000]}, "then": "$500 - $999.99"},
-                    {"case": {"$eq": ["$_id", 100000]}, "then": "$1,000 - $9,999.99"}
-                ],
-                "default": "$10,000+"
-            }
-        }
-    }},
-
-    # Stage 4: Final projection
-    {"$project": {
-        "_id": 0,
-        "price_range": 1,
-        "count": 1,
-        "avg_price_dollars": {"$round": [{"$divide": ["$avg_price_cents", 100]}, 2]},
-        "min_price_dollars": {"$divide": ["$min_price_cents", 100]},
-        "max_price_dollars": {"$divide": ["$max_price_cents", 100]},
-        "categories": 1,
-        "sample_products": {"$slice": ["$products", 3]}
-    }}
-]
-
-return await Product.aggregate(pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Understanding `$bucket`:**
@@ -738,16 +422,7 @@ Each document falls into the bucket where `boundaries[i] <= value < boundaries[i
 
 **`$addToSet` inside `$bucket`**: Collects unique category values per bucket, so you can see what categories fall into each price range.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - Boundaries in cents**: Since `base_price_cents` stores prices in cents, boundaries are also in cents. `1000` cents = $10.00, `5000` = $50.00, etc.
-
-**Hint 2 - `default`**: Documents that don't fall into any bucket (price >= $10,000) go into the `default` bucket. The `_id` of the default bucket is the string you provide.
-
-**Hint 3 - `$slice`**: `$slice: ["$products", 3]` takes the first 3 elements of the array. Without this, a bucket with 1000 products would return all 1000 names.
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
@@ -767,60 +442,8 @@ async def daily_revenue(self, days: int = 30) -> List[Dict]:
 Since Order has no top-level totals field, we first compute each order's total from its items using `$addFields` with `$sum` as an **expression operator** (not as a `$group` accumulator). This is an important distinction:
 
 ```python
-cutoff = utc_now() - timedelta(days=days)
-
-pipeline = [
-    # Stage 1: Filter to recent confirmed orders
-    {"$match": {
-        "status": {"$in": ["confirmed", "processing", "shipped", "delivered"]},
-        "created_at": {"$gte": cutoff}
-    }},
-
-    # Stage 2: Compute per-order total from items array
-    # $sum as an EXPRESSION (not accumulator) sums array field values
-    {"$addFields": {
-        "order_total_cents": {"$sum": "$items.total_cents"}
-    }},
-
-    # Stage 3: Group by date string
-    {"$group": {
-        "_id": {
-            "$dateToString": {
-                "format": "%Y-%m-%d",
-                "date": "$created_at"
-            }
-        },
-        "revenue_cents": {"$sum": "$order_total_cents"},
-        "order_count": {"$sum": 1},
-        "items_sold": {"$sum": {"$size": "$items"}},
-        "avg_order_value_cents": {"$avg": "$order_total_cents"},
-        "max_order_cents": {"$max": "$order_total_cents"},
-        "unique_customers": {"$addToSet": "$customer.user_id"}
-    }},
-
-    # Stage 4: Add computed fields
-    {"$addFields": {
-        "unique_customer_count": {"$size": "$unique_customers"}
-    }},
-
-    # Stage 5: Sort by date ascending (timeline order)
-    {"$sort": {"_id": 1}},
-
-    # Stage 6: Clean output
-    {"$project": {
-        "_id": 0,
-        "date": "$_id",
-        "revenue_cents": 1,
-        "revenue_dollars": {"$divide": ["$revenue_cents", 100]},
-        "order_count": 1,
-        "items_sold": 1,
-        "avg_order_value_cents": {"$round": ["$avg_order_value_cents", 0]},
-        "max_order_cents": 1,
-        "unique_customer_count": 1
-    }}
-]
-
-return await Order.aggregate(pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Understanding `$sum` as expression vs accumulator:**
@@ -853,16 +476,7 @@ return await Order.aggregate(pipeline).to_list()
 
 **`$addToSet` for unique counts**: `$addToSet: "$customer.user_id"` collects unique customer IDs per day. Then `$size` counts them. This gives "unique customers per day" without needing `$distinct`.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - Timezone**: `$dateToString` defaults to UTC. If you need local timezone: `{"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at", "timezone": "America/New_York"}}`.
-
-**Hint 2 - Missing days**: If no orders were placed on a particular day, that date won't appear in the results. The pipeline only returns days that have data. Filling gaps (zero-revenue days) must be done in application code.
-
-**Hint 3 - `$size` on `$items`**: `$size: "$items"` counts items per order BEFORE grouping. Inside `$group`, this is summed to get total items sold per day.
-
-</details>
+<!-- TODO: Implement this -->
 
 **Expected Output:**
 ```json
@@ -889,27 +503,8 @@ async def top_product_categories(self, limit: int = 10) -> List[Dict]:
 **The Simple Way - `$sortByCount`:**
 
 ```python
-pipeline = [
-    # Stage 1: Active products only
-    {"$match": {
-        "status": "active"
-    }},
-
-    # Stage 2: sortByCount on category
-    {"$sortByCount": "$category"},
-
-    # Stage 3: Limit
-    {"$limit": limit},
-
-    # Stage 4: Rename fields
-    {"$project": {
-        "_id": 0,
-        "category": "$_id",
-        "product_count": "$count"
-    }}
-]
-
-return await Product.aggregate(pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **`$sortByCount`** is a shorthand that expands to:
@@ -925,49 +520,13 @@ return await Product.aggregate(pipeline).to_list()
 **Now enhance it** - add richer metrics per category:
 
 ```python
-pipeline = [
-    {"$match": {"status": "active"}},
-
-    {"$group": {
-        "_id": "$category",
-        "product_count": {"$sum": 1},
-        "avg_price_cents": {"$avg": "$base_price_cents"},
-        "min_price_cents": {"$min": "$base_price_cents"},
-        "max_price_cents": {"$max": "$base_price_cents"},
-        "total_views": {"$sum": "$stats.view_count"},
-        "total_purchases": {"$sum": "$stats.purchase_count"},
-        "top_product": {"$first": "$name"}
-    }},
-
-    {"$sort": {"product_count": -1}},
-    {"$limit": limit},
-
-    {"$project": {
-        "_id": 0,
-        "category": "$_id",
-        "product_count": 1,
-        "avg_price_dollars": {"$round": [{"$divide": ["$avg_price_cents", 100]}, 2]},
-        "price_range": {
-            "min_dollars": {"$divide": ["$min_price_cents", 100]},
-            "max_dollars": {"$divide": ["$max_price_cents", 100]}
-        },
-        "total_views": 1,
-        "total_purchases": 1,
-        "top_product": 1
-    }}
-]
+# TODO: Implement your enhanced pipeline here
+pass
 ```
 
 **Accessing embedded stats**: `$stats.view_count` reaches into the embedded `ProductStats` document. MongoDB lets you dot-navigate into any nested field in aggregation expressions, just like in queries.
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - `$sortByCount` limitations**: It only gives you count. If you need additional metrics (price ranges, views), you must expand to the full `$group` + `$sort` pattern.
-
-**Hint 2 - ProductCategory enum**: The `category` field uses a `ProductCategory` enum with values like `electronics`, `fashion`, `beauty`, etc. The `$group` by `$category` will produce one bucket per unique category value.
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
@@ -998,76 +557,8 @@ Input Documents
 **Step 1: Order Dashboard Facet**
 
 ```python
-order_pipeline = [
-    {"$facet": {
-        # Facet 1: Overall stats
-        "overview": [
-            {"$match": {"status": {"$ne": "failed"}}},
-            {"$addFields": {
-                "order_total_cents": {"$sum": "$items.total_cents"}
-            }},
-            {"$group": {
-                "_id": None,
-                "total_orders": {"$sum": 1},
-                "total_revenue_cents": {"$sum": "$order_total_cents"},
-                "avg_order_value": {"$avg": "$order_total_cents"},
-                "total_items_sold": {"$sum": {"$size": "$items"}}
-            }},
-            {"$project": {"_id": 0}}
-        ],
-
-        # Facet 2: Orders by status
-        "by_status": [
-            {"$group": {
-                "_id": "$status",
-                "count": {"$sum": 1}
-            }},
-            {"$sort": {"count": -1}},
-            {"$project": {"_id": 0, "status": "$_id", "count": 1}}
-        ],
-
-        # Facet 3: Revenue by month
-        "monthly_revenue": [
-            {"$match": {"status": {"$in": ["confirmed", "processing", "shipped", "delivered"]}}},
-            {"$addFields": {
-                "order_total_cents": {"$sum": "$items.total_cents"}
-            }},
-            {"$group": {
-                "_id": {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}},
-                "revenue_cents": {"$sum": "$order_total_cents"},
-                "order_count": {"$sum": 1}
-            }},
-            {"$sort": {"_id": -1}},
-            {"$limit": 6},
-            {"$project": {"_id": 0, "month": "$_id", "revenue_cents": 1, "order_count": 1}}
-        ],
-
-        # Facet 4: Top 5 customers
-        "top_customers": [
-            {"$match": {"status": {"$in": ["confirmed", "processing", "shipped", "delivered"]}}},
-            {"$addFields": {
-                "order_total_cents": {"$sum": "$items.total_cents"}
-            }},
-            {"$group": {
-                "_id": "$customer.user_id",
-                "customer_name": {"$first": "$customer.display_name"},
-                "order_count": {"$sum": 1},
-                "total_spent_cents": {"$sum": "$order_total_cents"}
-            }},
-            {"$sort": {"total_spent_cents": -1}},
-            {"$limit": 5},
-            {"$project": {
-                "_id": 0,
-                "customer_id": {"$toString": "$_id"},
-                "customer_name": 1,
-                "order_count": 1,
-                "total_spent_cents": 1
-            }}
-        ]
-    }}
-]
-
-order_stats = await Order.aggregate(order_pipeline).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Step 2: Gather stats from other collections**
@@ -1075,133 +566,22 @@ order_stats = await Order.aggregate(order_pipeline).to_list()
 Since `$facet` runs within ONE collection, you need separate aggregations for other collections:
 
 ```python
-# User stats
-user_stats = await User.aggregate([
-    {"$facet": {
-        "total": [{"$match": {"deleted_at": None}}, {"$count": "count"}],
-        "recent_signups": [
-            {"$match": {
-                "deleted_at": None,
-                "created_at": {"$gte": utc_now() - timedelta(days=30)}
-            }},
-            {"$count": "count"}
-        ]
-    }}
-]).to_list()
-
-# Product stats
-product_stats = await Product.aggregate([
-    {"$facet": {
-        "total": [{"$match": {"status": {"$ne": "deleted"}}}, {"$count": "count"}],
-        "by_status": [
-            {"$match": {"status": {"$ne": "deleted"}}},
-            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-            {"$project": {"_id": 0, "status": "$_id", "count": 1}}
-        ],
-        "avg_price": [
-            {"$match": {"status": "active"}},
-            {"$group": {"_id": None, "avg_cents": {"$avg": "$base_price_cents"}}},
-            {"$project": {"_id": 0}}
-        ],
-        "by_category": [
-            {"$match": {"status": "active"}},
-            {"$sortByCount": "$category"},
-            {"$limit": 5},
-            {"$project": {"_id": 0, "category": "$_id", "count": "$count"}}
-        ]
-    }}
-]).to_list()
-
-# Post stats
-post_stats = await Post.aggregate([
-    {"$facet": {
-        "total": [{"$match": {"deleted_at": None}}, {"$count": "count"}],
-        "by_type": [
-            {"$match": {"deleted_at": None}},
-            {"$group": {"_id": "$post_type", "count": {"$sum": 1}}},
-            {"$project": {"_id": 0, "post_type": "$_id", "count": 1}}
-        ],
-        "total_engagement": [
-            {"$match": {"deleted_at": None}},
-            {"$group": {
-                "_id": None,
-                "total_views": {"$sum": "$stats.view_count"},
-                "total_likes": {"$sum": "$stats.like_count"},
-                "total_comments": {"$sum": "$stats.comment_count"}
-            }},
-            {"$project": {"_id": 0}}
-        ]
-    }}
-]).to_list()
-
-# Supplier stats
-supplier_stats = await Supplier.aggregate([
-    {"$facet": {
-        "total": [{"$count": "count"}],
-        "avg_products": [
-            {"$addFields": {"product_count": {"$size": "$product_ids"}}},
-            {"$group": {"_id": None, "avg": {"$avg": "$product_count"}}},
-            {"$project": {"_id": 0}}
-        ]
-    }}
-]).to_list()
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Step 3: Combine into dashboard**
 
 ```python
-# Helper to safely extract facet results
-def _extract(facet_result, key, default=None):
-    if facet_result and facet_result[0].get(key):
-        return facet_result[0][key]
-    return default if default is not None else []
-
-return {
-    "generated_at": utc_now().isoformat(),
-    "orders": {
-        "overview": _extract(order_stats, "overview", [{}])[0] if _extract(order_stats, "overview") else {},
-        "by_status": _extract(order_stats, "by_status"),
-        "monthly_revenue": _extract(order_stats, "monthly_revenue"),
-        "top_customers": _extract(order_stats, "top_customers")
-    },
-    "users": {
-        "total": _extract(user_stats, "total", [{"count": 0}])[0].get("count", 0),
-        "recent_signups_30d": _extract(user_stats, "recent_signups", [{"count": 0}])[0].get("count", 0)
-    },
-    "products": {
-        "total": _extract(product_stats, "total", [{"count": 0}])[0].get("count", 0),
-        "by_status": _extract(product_stats, "by_status"),
-        "avg_price_cents": _extract(product_stats, "avg_price", [{}])[0].get("avg_cents", 0),
-        "top_categories": _extract(product_stats, "by_category")
-    },
-    "posts": {
-        "total": _extract(post_stats, "total", [{"count": 0}])[0].get("count", 0),
-        "by_type": _extract(post_stats, "by_type"),
-        "engagement": _extract(post_stats, "total_engagement", [{}])[0] if _extract(post_stats, "total_engagement") else {}
-    },
-    "suppliers": {
-        "total": _extract(supplier_stats, "total", [{"count": 0}])[0].get("count", 0),
-        "avg_products_per_supplier": _extract(supplier_stats, "avg_products", [{}])[0].get("avg", 0)
-    }
-}
+# TODO: Implement your pipeline here
+pass
 ```
 
 **Why `$facet` is powerful**: Without `$facet`, the order dashboard would require 4 separate database round-trips. With `$facet`, it's 1 round-trip that runs 4 sub-pipelines in parallel on the server.
 
 **Why multiple `$facet` calls**: `$facet` operates within a single collection. To get stats from orders, users, products, posts, and suppliers, you need one `$facet` per collection (5 total round-trips instead of ~15).
 
-<details>
-<summary>Hints</summary>
-
-**Hint 1 - `$count` stage**: `{"$count": "field_name"}` returns `{"field_name": N}`. It's a shorthand for `{"$group": {"_id": null, "field_name": {"$sum": 1}}}`.
-
-**Hint 2 - Empty facet results**: A facet with no matching documents returns `[]` (empty array), not `[{count: 0}]`. Always handle empty results with defaults.
-
-**Hint 3 - Computing order totals inside $facet**: Since Order has no top-level total field, use `{"$addFields": {"order_total_cents": {"$sum": "$items.total_cents"}}}` inside each facet sub-pipeline that needs revenue data.
-
-**Hint 4 - Performance**: Each `$facet` scans the collection once but runs all sub-pipelines. A `$match` at the top of a sub-pipeline uses indexes. But `$facet` itself cannot be preceded by stages that change the document set differently per facet - that's why each facet sub-pipeline starts with its own `$match`.
-
-</details>
+<!-- TODO: Implement this -->
 
 ---
 
