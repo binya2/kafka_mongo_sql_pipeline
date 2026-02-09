@@ -13,7 +13,9 @@
       "Bash(SUPPLIER_HEADER=\"X-Supplier-ID: 6989d197687067a0bba5c68c\":*)",
       "Bash(__NEW_LINE_5d2e06504c8f2a83__ echo \"\")",
       "Bash(echo:*)",
-      "Bash(printf:*)"
+      "Bash(printf:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rm:*)"
     ]
   }
 }

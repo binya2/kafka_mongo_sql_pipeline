@@ -4,12 +4,18 @@
 
 Every mutation in the Social Commerce Platform emits a **domain event** through Kafka. When a user registers, an order completes, or a product is published - the backend service **produces** an event, and downstream consumers **react** to it. This is the backbone of the platform's event-driven architecture: the backend writes to MongoDB and emits events, while a separate consumer service subscribes to topics and builds **read-optimized projections** in MySQL for analytics.
 
-The entire pipeline is **already built**. Your job is to study how each piece works, trace events from end to end, and understand the architectural patterns. This task is a study exercise, not a build exercise.
+Your job is to **implement the core Kafka infrastructure** - the Docker configuration, shared config/topics, the producer, and the consumer. Then study how the domain consumers and DAL layer use these building blocks to process events end-to-end.
 
-### What You Will Study
+### What You Will Implement
 
-- **Producer side**: How `KafkaProducer.emit()` wraps data in an event envelope and sends it to Kafka
-- **Consumer side**: How `KafkaConsumer` routes messages to domain-specific handlers
+- **Docker Compose**: Configure Kafka in KRaft mode (no Zookeeper) and wire environment variables
+- **KafkaConfig**: Read environment variables and produce config dicts for producer/consumer
+- **Topics & EventTypes**: Define the 5 topics and 18 event type constants
+- **KafkaProducer**: Send messages, build event envelopes, singleton pattern
+- **KafkaConsumer**: Poll loop, handler registration, signal handling for graceful shutdown
+
+### What You Will Study (Already Implemented)
+
 - **5 domain consumers**: `UserConsumer`, `SupplierConsumer`, `ProductConsumer`, `OrderConsumer`, `PostConsumer`
 - **5 DAL classes**: How nested MongoDB documents are flattened into relational MySQL tables
 - **7 MySQL tables**: The analytics read model that mirrors MongoDB data
@@ -75,36 +81,29 @@ The entire pipeline is **already built**. Your job is to study how each piece wo
 ## 2. BEFORE YOU START
 
 ### Prerequisites
-- **Docker with Kafka running** - The platform uses KRaft mode Kafka (no Zookeeper)
-- **MySQL running** - The analytics database where consumers write
+- **Docker installed** - You'll configure the Kafka service
 - **TASK_01 (User) should be complete** - So events are actually being produced
 - Familiarity with the MongoDB service layer from previous tasks
 
-### Files You MUST Read (In This Order)
+### Files You Will Implement
 
-| Order | File | Why |
-|-------|------|-----|
-| 1 | `shared/kafka/config.py` | KafkaConfig with `to_producer_config()` and `to_consumer_config()` |
-| 2 | `shared/kafka/topics.py` | `Topic` enum (5 topics) + `EventType` enum (18 event types) |
-| 3 | `apps/mongo_backend/kafka/producer.py` | KafkaProducer with `send()` and `emit()` |
-| 4 | `apps/mysql_server/src/kafka/consumer.py` | KafkaConsumer with handler registration and poll loop |
-| 5 | `apps/mysql_server/src/consumers/user_consumer.py` | UserConsumer - study this as the reference pattern |
-| 6 | `apps/mysql_server/src/dal/user_dal.py` | UserDAL with SQL upsert operations |
-| 7 | `apps/mysql_server/src/db/tables.py` | All 7 MySQL table definitions |
-| 8 | `apps/mysql_server/src/db/connection.py` | Database with connection pool |
-| 9 | `apps/mysql_server/main.py` | Entry point: init DB, register all handlers, subscribe, start |
+| Order | File | What to Implement |
+|-------|------|-------------------|
+| 1 | `docker-compose.yml` | Kafka service environment + app/mysql-service env vars |
+| 2 | `shared/kafka/config.py` | `from_env()`, `to_producer_config()`, `to_consumer_config()` |
+| 3 | `shared/kafka/topics.py` | Topic constants, `all()` method, EventType constants |
+| 4 | `apps/mongo_backend/kafka/producer.py` | `__init__`, `send()`, `emit()`, `flush()`, singleton |
+| 5 | `apps/mysql_server/src/kafka/consumer.py` | `__init__`, `register_handler()`, `subscribe()`, `start()`, `stop()`, signals |
 
-### How This Differs From Previous Tasks
+### Files You Should Study (Already Implemented)
 
-| Aspect | MongoDB Tasks (01-08) | Kafka Task (09) |
-|--------|----------------------|-----------------|
-| Data flow | Request -> Service -> MongoDB | Kafka -> Consumer -> MySQL |
-| Programming model | Async (Beanie ODM) | Synchronous (confluent_kafka) |
-| Data shape | Nested documents | Flat relational rows |
-| Trigger | HTTP request | Event message on topic |
-| Error handling | Raise AppError | Log + continue (don't block queue) |
-| Service location | `apps/mongo_backend/` | `apps/mysql_server/` |
-| Your role | Implement service methods | **Study existing implementation** |
+| File | Why |
+|------|-----|
+| `apps/mysql_server/src/consumers/user_consumer.py` | Reference consumer pattern |
+| `apps/mysql_server/src/dal/user_dal.py` | UserDAL with SQL upsert operations |
+| `apps/mysql_server/src/db/tables.py` | All 7 MySQL table definitions |
+| `apps/mysql_server/src/db/connection.py` | Database with connection pool |
+| `apps/mysql_server/main.py` | Entry point: init DB, register all handlers, subscribe, start |
 
 ---
 
@@ -113,7 +112,6 @@ The entire pipeline is **already built**. Your job is to study how each piece wo
 Every event produced by `KafkaProducer.emit()` has this structure:
 
 ```python
-# From apps/mongo_backend/kafka/producer.py
 event = {
     "event_type": event_type,              # e.g., EventType.ORDER_CREATED -> "order.created"
     "event_id": str(uuid.uuid4()),         # unique ID for idempotency
@@ -127,416 +125,249 @@ The topic is **extracted from the event_type** string - `"order.created"` goes t
 
 ### Two Types of Event Payloads
 
-Understanding this distinction is critical:
-
 | Pattern | When Used | Payload Size | Example |
 |---------|-----------|-------------|---------|
 | **Full model dump** | `*.created`, `*.updated`, lifecycle events | Large - entire document | `product.model_dump(mode="json")` |
 | **Minimal fields** | `*.deleted`, `*.cancelled` | Small - just IDs | `{"order_number": ..., "product_id": ...}` |
 
-```python
-# PATTERN 1: Full dump on creation/update (large payload)
-self._kafka.emit(
-    event_type=EventType.ORDER_CREATED,
-    entity_id=oid_to_str(order.id),
-    data=order.model_dump(mode="json"),        # <-- entire order document
-)
-
-# PATTERN 2: Minimal fields on cancel/delete (small payload)
-self._kafka.emit(
-    event_type=EventType.ORDER_CANCELLED,
-    entity_id=oid_to_str(order.id),
-    data={"order_number": order.order_number},  # <-- just what's needed
-)
-```
-
 ---
 
 ## 4. EXERCISES
 
-### Exercise 1: Understand the Producer Side
+### Exercise 1: Configure Kafka in Docker Compose
 
-**Goal:** Trace exactly what happens when a backend service emits an event.
+**File:** `docker-compose.yml`
 
-**What to study:** `apps/mongo_backend/kafka/producer.py`
+The `kafka` service is already defined with image, container_name, ports, volumes, and networks. You need to fill in the `environment` block to configure KRaft mode (Kafka without Zookeeper).
 
-#### 1a. Trace `emit()` vs `send()`
+#### Expected Configuration
 
-Read the `KafkaProducer` class and answer these questions:
+The kafka service environment should contain:
 
-```python
-# Q1: What does emit() add that send() doesn't?
-# (Hint: Look at the event envelope built in emit() - event_id, timestamp, etc.)
+| Environment Variable | Value |
+|---------------------|-------|
+| `KAFKA_NODE_ID` | `1` |
+| `KAFKA_PROCESS_ROLES` | `broker,controller` |
+| `KAFKA_CONTROLLER_QUORUM_VOTERS` | `1@kafka:29093` |
+| `KAFKA_CONTROLLER_LISTENER_NAMES` | `CONTROLLER` |
+| `KAFKA_LISTENERS` | `PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093` |
+| `KAFKA_ADVERTISED_LISTENERS` | `PLAINTEXT://kafka:9092` |
+| `KAFKA_LISTENER_SECURITY_PROTOCOL_MAP` | `CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT` |
+| `KAFKA_INTER_BROKER_LISTENER_NAME` | `PLAINTEXT` |
+| `CLUSTER_ID` | `MkU3OEVBNTcwNTJENDM2Qk` |
+| `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` | `1` |
+| `KAFKA_AUTO_CREATE_TOPICS_ENABLE` | `"true"` |
 
-# Q2: How does emit() determine which Kafka topic to send to?
-# (Hint: Look at how it extracts the topic from event_type)
+Also wire these environment variables into the **`app`** and **`mysql-service`** services:
 
-# Q3: What is the partition key for events? Why does this matter for ordering?
-# (Hint: Look at the key= parameter - entity_id ensures all events for the same entity are ordered)
-
-# Q4: Why is there a singleton pattern (get_kafka_producer)?
-# (Hint: Think about connection pooling and config consistency)
-```
-
-<!-- TODO: Answer these questions by studying the code -->
-
-#### 1b. Map All Emit Calls
-
-Find all the `emit()` calls across the backend services and identify the event types and payload patterns:
-
-| Service File | EventType | Payload |
-|-------------|-----------|---------|
-| `services/user.py` | `USER_CREATED` | Full `user.model_dump(mode="json")` |
-| `services/user.py` | `USER_UPDATED` | Full `user.model_dump(mode="json")` |
-| `services/user.py` | `USER_DELETED` | `{"user_id": ...}` |
-| `services/user.py` | `SUPPLIER_CREATED` | Full `supplier.model_dump(mode="json")` |
-| `services/user.py` | `SUPPLIER_UPDATED` | Full `supplier.model_dump(mode="json")` |
-| `services/user.py` | `SUPPLIER_DELETED` | `{"supplier_id": ...}` |
-| `services/product.py` | `PRODUCT_CREATED` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_UPDATED` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_PUBLISHED` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_DISCONTINUED` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_OUT_OF_STOCK` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_RESTORED` | Full `product.model_dump(mode="json")` |
-| `services/product.py` | `PRODUCT_DELETED` | `{"product_id": ...}` |
-| `services/order.py` | `ORDER_CREATED` | Full `order.model_dump(mode="json")` |
-| `services/order.py` | `ORDER_CANCELLED` | `{"order_number": ...}` |
-| `services/post.py` | `POST_CREATED` | Full `post.model_dump(mode="json")` |
-| `services/post.py` | `POST_UPDATED` | Full `post.model_dump(mode="json")` |
-| `services/post.py` | `POST_PUBLISHED` | Full `post.model_dump(mode="json")` |
-| `services/post.py` | `POST_DELETED` | `{"post_id": ...}` |
-
-> **Verify yourself:** Search for `self._kafka.emit(` across all service files and confirm this table.
+| Service | Variable | Value |
+|---------|----------|-------|
+| `app` | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` |
+| `app` | `KAFKA_CLIENT_ID` | `backend-service` |
+| `mysql-service` | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` |
+| `mysql-service` | `KAFKA_CLIENT_ID` | `mysql-service` |
+| `mysql-service` | `KAFKA_GROUP_ID` | `mysql-analytics-service` |
 
 ---
 
-### Exercise 2: Understand the Consumer Side
+### Exercise 2: Implement KafkaConfig
 
-**Goal:** Trace the full consumer lifecycle from startup to message processing.
+**File:** `shared/kafka/config.py`
 
-**What to study:** `apps/mysql_server/main.py` + `apps/mysql_server/src/kafka/consumer.py`
+The `KafkaConfig` class has two fields already declared: `bootstrap_servers` and `client_id`. Implement the three methods:
 
-#### 2a. Trace the Startup Sequence
+#### `from_env(cls, client_id="service")` -> `KafkaConfig`
 
-Read `main.py` and trace the initialization:
+Read from environment variables:
+- `KAFKA_BOOTSTRAP_SERVERS` (default: `"localhost:9092"`)
+- `KAFKA_CLIENT_ID` (default: the `client_id` parameter)
 
+#### `to_producer_config(self)` -> `dict`
+
+Return:
 ```python
-# Step 1: Database initialization
-db = get_database()
-db.connect()         # Creates MySQL connection pool (5 connections)
-db.init_tables()     # Creates all 7 MySQL tables
-
-# Step 2: Consumer creation
-consumer = KafkaConsumer(group_id="mysql-analytics-service")
-# Q: What config does this create? (Look at KafkaConfig.to_consumer_config)
-# Q: What does auto.offset.reset = "earliest" mean for a new consumer group?
-
-# Step 3: Handler registration (ALL 5 domain consumers)
-domain_consumers = [
-    UserConsumer(),
-    SupplierConsumer(),
-    ProductConsumer(),
-    OrderConsumer(),
-    PostConsumer(),
-]
-for dc in domain_consumers:
-    for event_type, handler in dc.get_handlers().items():
-        consumer.register_handler(event_type, handler)
-# Q: How many handlers are registered total? (Count across all consumers)
-
-# Step 4: Topic subscription
-consumer.subscribe(Topic.all())
-# Q: Topic.all() returns all 5 topics. Why subscribe to all?
-
-# Step 5: Start consuming
-consumer.start()
-# Q: What happens in the poll loop when a message has no registered handler?
+{
+    "bootstrap.servers": self.bootstrap_servers,
+    "client.id": self.client_id,
+}
 ```
 
-<!-- TODO: Answer these questions by studying the code -->
+#### `to_consumer_config(self, group_id)` -> `dict`
 
-#### 2b. Trace Message Processing
-
-Follow a single event through the consumer:
-
-```
-Kafka message arrives (JSON bytes)
-    |
-    v
-consumer.poll(timeout=1.0)              # Blocks up to 1 second
-    |
-    v
-msg.error() check                       # Handle partition EOF, unknown topic
-    |
-    v
-_process_message(msg)
-    |
-    +-- json.loads(msg.value().decode())  # Deserialize JSON
-    |
-    +-- value.get("event_type")           # Extract event_type from envelope
-    |
-    +-- self._handlers.get(event_type)    # Lookup registered handler
-    |
-    +-- handler(value)                    # Call handler with full event dict
+Return:
+```python
+{
+    "bootstrap.servers": self.bootstrap_servers,
+    "group.id": group_id,
+    "client.id": self.client_id,
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": True,
+    "auto.commit.interval.ms": 5000,
+}
 ```
 
-> **Key insight:** The consumer doesn't know about MongoDB models. It receives a plain dict and extracts what it needs. The "flattening" happens in the handler, not the consumer infrastructure.
+> **Note:** The `auto.offset.reset` value can optionally be read from an environment variable `KAFKA_AUTO_OFFSET_RESET` with default `"earliest"`.
 
 ---
 
-### Exercise 3: Study the UserConsumer (Reference Pattern)
+### Exercise 3: Define Topics & Event Types
 
-**Goal:** Understand the consumer pattern that all domain consumers follow.
+**File:** `shared/kafka/topics.py`
 
-**What to study:** `apps/mysql_server/src/consumers/user_consumer.py`
+#### `Topic` class
 
-#### The Pattern
+Define 5 topic constants and an `all()` class method:
 
-Every consumer follows this structure:
+| Constant | Value |
+|----------|-------|
+| `USER` | `"user"` |
+| `ORDER` | `"order"` |
+| `POST` | `"post"` |
+| `PRODUCT` | `"product"` |
+| `SUPPLIER` | `"supplier"` |
 
-```python
-class UserConsumer:
-    def __init__(self):
-        self._dal = UserDAL()                    # 1. DAL handles all SQL
+`all()` returns a list of all 5 topic strings.
 
-    def _parse_ts(self, ts: str):                # 2. Shared timestamp parser
-        ...
+#### `EventType` class
 
-    def handle_user_created(self, event):        # 3. One handler per event type
-        data = event.get("data", {})             #    Extract data from envelope
-        contact = data.get("contact_info", {})   #    Navigate nested MongoDB doc
-        profile = data.get("profile", {})        #    Flatten to individual fields
-        self._dal.insert_user(                   #    Call DAL to write to MySQL
-            user_id=event.get("entity_id"),
-            email=contact.get("primary_email"),
-            display_name=profile.get("display_name"),
-            ...
-        )
+Define 19 event type constants in `"topic.action"` format:
 
-    def get_handlers(self) -> dict:              # 4. Map event types to handlers
-        return {
-            EventType.USER_CREATED: self.handle_user_created,
-            EventType.USER_UPDATED: self.handle_user_updated,
-            EventType.USER_DELETED: self.handle_user_deleted,
-        }
-```
-
-#### Key Patterns to Note:
-
-1. **One DAL per consumer** - Consumer owns a DAL instance for its domain
-2. **`_parse_ts()` helper** - Parses ISO timestamps for MySQL storage
-3. **`event.get("data", {})` first** - Always extract the data payload from the envelope
-4. **Navigate with `.get()` chains** - Never assume fields exist (MongoDB docs can vary)
-5. **`get_handlers()` dict** - Returns `{EventType.X: self.handle_x}` mapping for registration
-6. **Handlers are synchronous** - The consumer poll loop is blocking, handlers run inline
-7. **Upsert pattern** - Created and updated events often use the same `_handle_*_upsert()` method
+| Constant | Value | Topic |
+|----------|-------|-------|
+| `USER_CREATED` | `"user.created"` | user |
+| `USER_UPDATED` | `"user.updated"` | user |
+| `USER_DELETED` | `"user.deleted"` | user |
+| `SUPPLIER_CREATED` | `"supplier.created"` | supplier |
+| `SUPPLIER_UPDATED` | `"supplier.updated"` | supplier |
+| `SUPPLIER_DELETED` | `"supplier.deleted"` | supplier |
+| `PRODUCT_CREATED` | `"product.created"` | product |
+| `PRODUCT_UPDATED` | `"product.updated"` | product |
+| `PRODUCT_PUBLISHED` | `"product.published"` | product |
+| `PRODUCT_DISCONTINUED` | `"product.discontinued"` | product |
+| `PRODUCT_OUT_OF_STOCK` | `"product.out_of_stock"` | product |
+| `PRODUCT_RESTORED` | `"product.restored"` | product |
+| `PRODUCT_DELETED` | `"product.deleted"` | product |
+| `ORDER_CREATED` | `"order.created"` | order |
+| `ORDER_CANCELLED` | `"order.cancelled"` | order |
+| `POST_CREATED` | `"post.created"` | post |
+| `POST_UPDATED` | `"post.updated"` | post |
+| `POST_PUBLISHED` | `"post.published"` | post |
+| `POST_DELETED` | `"post.deleted"` | post |
 
 ---
 
-### Exercise 4: Study the Flattening Pattern Across All Consumers
+### Exercise 4: Implement KafkaProducer
 
-**Goal:** Understand how each consumer transforms nested MongoDB documents into flat MySQL rows.
+**File:** `apps/mongo_backend/kafka/producer.py`
 
-#### 4a. User Flattening (`user_consumer.py`)
+All imports are already provided. Implement the method bodies:
 
-```
-MongoDB User Document           MySQL users table
-{                                +-------------------+
-  "contact_info": {              | user_id           | <- event["entity_id"]
-    "primary_email": "...",      | email             | <- data["contact_info"]["primary_email"]
-    "phone": "..."               | phone             | <- data["contact_info"]["phone"]
-  },                             | display_name      | <- data["profile"]["display_name"]
-  "profile": {                   | avatar            | <- data["profile"]["avatar"]
-    "display_name": "...",       | bio               | <- data["profile"]["bio"]
-    "avatar": "...",             | deleted_at        | <- data["deleted_at"]
-    "bio": "..."                 +-------------------+
+#### `__init__(self, config=None)`
+
+- Use provided config or create one with `KafkaConfig.from_env()`
+- Create a `confluent_kafka.Producer` from `config.to_producer_config()`
+- Log initialization
+
+#### `_delivery_callback(self, err, msg)`
+
+- If `err`: log error with the error message
+- Else: log debug with topic and partition info (`msg.topic()`, `msg.partition()`)
+
+#### `send(self, topic, value, key=None)`
+
+- Serialize `value` to JSON bytes: `json.dumps(value).encode("utf-8")`
+- Encode `key` to UTF-8 bytes if provided, otherwise `None`
+- Call `self._producer.produce(topic=..., key=..., value=..., callback=self._delivery_callback)`
+- Call `self._producer.poll(0)` to trigger delivery callbacks
+
+#### `flush(self, timeout=10.0)` -> `int`
+
+- Return `self._producer.flush(timeout)`
+
+#### `emit(self, event_type, entity_id, data)`
+
+- Extract topic from event_type: `event_type.split(".")[0]`
+- Build the event envelope:
+  ```python
+  {
+      "event_type": event_type,
+      "event_id": str(uuid.uuid4()),
+      "timestamp": utc_now().isoformat(),
+      "entity_id": entity_id,
+      "data": data,
   }
-}
-```
+  ```
+- Call `self.send(topic=topic, key=entity_id, value=event)`
 
-#### 4b. Order Flattening (`order_consumer.py`)
+#### `get_kafka_producer()` -> `KafkaProducer` (module-level function)
 
-The most complex flattening - one event inserts into TWO tables:
-
-```
-MongoDB Order Document           MySQL orders table
-{                                +-------------------+
-  "order_number": "...",         | order_id          | <- event["entity_id"]
-  "customer": {                  | order_number      | <- data["order_number"]
-    "user_id": "...",            | customer_user_id  | <- data["customer"]["user_id"]
-    "display_name": "...",       | customer_name     | <- data["customer"]["display_name"]
-    "email": "..."               | customer_email    | <- data["customer"]["email"]
-  },                             | shipping_*        | <- data["shipping_address"]["*"]
-  "shipping_address": {...},     | status            | <- data["status"]
-  "items": [...]                 +-------------------+
-}
-                                 MySQL order_items table
-  items[0]:                      +-------------------+
-  {                              | order_id          | <- event["entity_id"]
-    "item_id": "...",            | item_id           | <- item["item_id"]
-    "product_snapshot": {        | product_id        | <- item["product_snapshot"]["product_id"]
-      "product_id": "...",       | product_name      | <- item["product_snapshot"]["product_name"]
-      "product_name": "...",     | supplier_id       | <- item["product_snapshot"]["supplier_id"]
-      "supplier_id": "..."       | variant_name      | <- item["product_snapshot"]["variant_name"]
-    },                           | quantity          | <- item["quantity"]
-    "quantity": 2,               | unit_price_cents  | <- item["unit_price_cents"]
-    "unit_price_cents": 1500,    | total_cents       | <- item["total_cents"]
-    "total_cents": 3000          +-------------------+
-  }
-```
-
-#### 4c. Product Flattening (`product_consumer.py`)
-
-Also inserts into TWO tables - products AND product_variants:
-
-```
-MongoDB Product Document         MySQL products table
-{                                +-------------------+
-  "name": "...",                 | product_id        | <- event["entity_id"]
-  "category": "...",             | supplier_id       | <- data["supplier_id"]
-  "base_price_cents": 1500,      | name              | <- data["name"]
-  "supplier_id": "...",          | category          | <- data["category"]
-  "status": "active",           | base_price_cents  | <- data["base_price_cents"]
-  "metadata": {"base_sku":..},   | status            | <- data["status"]
-  "stats": {...},                | stats fields      | <- data["stats"]["*"]
-  "variants": {                  +-------------------+
-    "Default": {
-      "price_cents": 1500,       MySQL product_variants table
-      "quantity": 10,            +-------------------+
-      "attributes": [...]        | product_id        |
-    }                            | variant_key       | <- dict key ("Default")
-  }                              | price_cents       | <- variant["price_cents"]
-}                                | quantity          | <- variant["quantity"]
-                                 +-------------------+
-```
-
-> **Note**: Product lifecycle events (`PUBLISHED`, `DISCONTINUED`, `OUT_OF_STOCK`, `RESTORED`) all send the **full model dump** and reuse the same `_handle_product_upsert()` method. This means every lifecycle change fully refreshes the MySQL row.
-
-#### 4d. Post Flattening (`post_consumer.py`)
-
-```
-MongoDB Post Document            MySQL posts table
-{                                +-------------------+
-  "post_type": "text",           | post_id           | <- event["entity_id"]
-  "author": {                    | author_user_id    | <- data["author"]["user_id"]
-    "user_id": "...",            | author_name       | <- data["author"]["display_name"]
-    "display_name": "...",       | post_type         | <- data["post_type"]
-    "avatar": "...",             | text_content      | <- data["text_content"]
-    "author_type": "user"        | media_json        | <- json.dumps(data["media"])
-  },                             | link_url          | <- data["link_preview"]["url"]
-  "text_content": "...",         | link_title        | <- data["link_preview"]["title"]
-  "media": [...],                | stats fields      | <- data["stats"]["*"]
-  "link_preview": {...},         | published_at      | <- data["published_at"]
-  "stats": {...}                 | deleted_at        | <- data["deleted_at"]
-}                                +-------------------+
-```
-
-#### 4e. Supplier Flattening (`supplier_consumer.py`)
-
-```
-MongoDB Supplier Document        MySQL suppliers table
-{                                +-------------------+
-  "contact_info": {              | supplier_id       | <- event["entity_id"]
-    "primary_email": "...",      | email             | <- data["contact_info"]["primary_email"]
-    "primary_phone": "...",      | primary_phone     | <- data["contact_info"]["primary_phone"]
-    "contact_person_*": "..."    | contact_person_*  | <- data["contact_info"]["*"]
-  },                             | legal_name        | <- data["company_info"]["legal_name"]
-  "company_info": {              | dba_name          | <- data["company_info"]["dba_name"]
-    "legal_name": "...",         | address fields    | <- data["company_info"]["business_address"]["*"]
-    "business_address": {        | support_*         | <- data["business_info"]["*"]
-      "street": "...",           | social_urls       | <- data["business_info"]["social_urls"]
-      "city": "...",             +-------------------+
-      ...
-    }
-  },
-  "business_info": {...}
-}
-```
+- Singleton pattern using the module-level `kafka_producer` variable
+- Create a new `KafkaProducer()` if `kafka_producer is None`
+- Return the instance
 
 ---
 
-### Exercise 5: Study the DAL Layer
+### Exercise 5: Implement KafkaConsumer
 
-**Goal:** Understand the SQL patterns used for idempotent event processing.
+**File:** `apps/mysql_server/src/kafka/consumer.py`
 
-**What to study:** All files in `apps/mysql_server/src/dal/`
+All imports are already provided. Implement the method bodies:
 
-#### The Upsert Pattern
+#### `__init__(self, group_id="mysql-analytics-service")`
 
-Every DAL uses `INSERT ... ON DUPLICATE KEY UPDATE` for idempotency:
+- Create config with `KafkaConfig.from_env(client_id="mysql-service")`
+- Create a `confluent_kafka.Consumer` from `config.to_consumer_config(group_id)`
+- Initialize `self._handlers: dict[str, Callable] = {}`
+- Initialize `self._running = False`
+- Log initialization
 
-```sql
-INSERT INTO users (user_id, email, display_name, ..., event_id, event_timestamp)
-VALUES (%s, %s, %s, ..., %s, %s)
-ON DUPLICATE KEY UPDATE
-  email = VALUES(email),
-  display_name = VALUES(display_name),
-  ...,
-  event_id = VALUES(event_id),
-  event_timestamp = VALUES(event_timestamp)
-```
+#### `register_handler(self, event_type, handler)`
 
-> **Why upsert?** If a Kafka message is delivered twice (at-least-once delivery), the second insert becomes an update instead of failing. The `event_id` and `event_timestamp` columns provide an audit trail of the last processed event.
+- Store handler in `self._handlers` dict keyed by event_type
+- Log registration
 
-#### Delete Patterns
+#### `subscribe(self, topics=None)`
 
-| Domain | Delete Type | SQL |
-|--------|-----------|-----|
-| User | Soft delete | `UPDATE users SET deleted_at = NOW(6) WHERE user_id = %s` |
-| Post | Soft delete | `UPDATE posts SET deleted_at = NOW(6) WHERE post_id = %s` |
-| Supplier | Hard delete | `DELETE FROM suppliers WHERE supplier_id = %s` |
-| Product | Hard delete | `DELETE FROM products WHERE product_id = %s` (CASCADE to variants) |
-| Order | Status update | `UPDATE orders SET status = 'cancelled' WHERE order_number = %s` |
+- Default to `Topic.all()` if topics is None
+- Call `self._consumer.subscribe(topics)`
+- Log subscription
 
-#### The Replace Pattern (Product Variants)
+#### `_process_message(self, msg)`
 
-Product variants use a transactional DELETE + INSERT:
+- JSON decode: `json.loads(msg.value().decode("utf-8"))`
+- Extract `event_type` from the decoded value
+- If no event_type, log warning and return
+- Look up handler in `self._handlers`
+- If handler found, call `handler(value)` and log success
+- If no handler, log debug
+- Handle `json.JSONDecodeError` and general exceptions with error logging
 
-```python
-def replace_variants(self, product_id, variants):
-    conn = self._db.get_connection()
-    cursor = conn.cursor()
-    # Step 1: Delete ALL existing variants for this product
-    cursor.execute("DELETE FROM product_variants WHERE product_id = %s", (product_id,))
-    # Step 2: Insert all current variants
-    for v in variants:
-        cursor.execute("INSERT INTO product_variants (...) VALUES (%s, ...)", ...)
-    conn.commit()
-```
+#### `start(self)`
 
-> **Why replace instead of upsert?** Variants can be added or removed. An upsert wouldn't delete variants that no longer exist. The replace pattern guarantees MySQL always matches the current state.
+- Set `self._running = True`
+- Call `self._setup_signal_handlers()`
+- Log start message
+- Enter poll loop: `while self._running`
+  - `msg = self._consumer.poll(timeout=1.0)`
+  - If `msg is None`: continue
+  - If `msg.error()`:
+    - `KafkaError._PARTITION_EOF`: continue
+    - `KafkaError.UNKNOWN_TOPIC_OR_PART`: log warning, continue
+    - Other errors: log error, continue
+  - Else: call `self._process_message(msg)`
+- Wrap in try/except for `KeyboardInterrupt`
+- In finally block: call `self.stop()`
 
----
+#### `stop(self)`
 
-### Exercise 6: Study the MySQL Schema
+- Set `self._running = False`
+- Call `self._consumer.close()`
+- Log stop message
 
-**Goal:** Understand the analytics read model.
+#### `_setup_signal_handlers(self)`
 
-**What to study:** `apps/mysql_server/src/db/tables.py`
-
-#### The 7 Tables
-
-| Table | Primary Key | Notable Columns | Indexes |
-|-------|------------|----------------|---------|
-| `users` | `user_id` (VARCHAR 24) | email, display_name, deleted_at, event_id | email, created_at |
-| `suppliers` | `supplier_id` (VARCHAR 24) | email, legal_name, address fields, social_urls | email, legal_name, country/state/city |
-| `products` | `product_id` (VARCHAR 24) | supplier_id, name, category, status, stats | supplier_id, category, status, created_at |
-| `product_variants` | `id` (auto-increment) | product_id (FK CASCADE), variant_key, price, quantity | UNIQUE(product_id, variant_key) |
-| `orders` | `order_id` (VARCHAR 24) | order_number (UNIQUE), customer_*, shipping_*, status | customer_user_id, status, created_at |
-| `order_items` | `id` (auto-increment) | order_id (FK CASCADE), item_id, product snapshot fields | UNIQUE(order_id, item_id) |
-| `posts` | `post_id` (VARCHAR 24) | author_*, post_type, media_json, link_*, stats, deleted_at | author_user_id, post_type, published_at |
-
-#### Common Columns Across All Tables
-
-Every table includes:
-- `event_id` (VARCHAR 36) - UUID of the triggering Kafka event
-- `event_timestamp` (DATETIME 6) - When the event was produced
-- `created_at`, `updated_at` (DATETIME 6) - Record timestamps
-
-> **Questions to answer:**
-> 1. Why is `order_number` UNIQUE in the orders table?
-> 2. Why do `product_variants` and `order_items` use CASCADE DELETE on their foreign keys?
-> 3. Why are `user_id` columns VARCHAR(24) instead of auto-increment integers?
+- Define a handler function that sets `self._running = False`
+- Register it for both `signal.SIGINT` and `signal.SIGTERM`
 
 ---
 
@@ -604,7 +435,7 @@ Trace one complete event from API call to MySQL row:
 
 ### EventType Enum (`shared/kafka/topics.py`)
 
-18 event types across 5 topics:
+19 event types across 5 topics:
 
 #### User Topic (`Topic.USER`)
 | EventType | Consumer Handler | DAL Method | MySQL Action |
@@ -730,7 +561,7 @@ Trace through all the files that would need to change.
 |-----------|------|---------|
 | `KafkaConfig` | `shared/kafka/config.py` | Connection settings from env vars |
 | `Topic` | `shared/kafka/topics.py` | 5 topic constants: USER, ORDER, POST, PRODUCT, SUPPLIER |
-| `EventType` | `shared/kafka/topics.py` | 18 event type constants |
+| `EventType` | `shared/kafka/topics.py` | 19 event type constants |
 | `KafkaProducer` | `apps/mongo_backend/kafka/producer.py` | `send()` for raw, `emit()` for enveloped |
 | `get_kafka_producer()` | Same file | Singleton access pattern |
 
@@ -760,15 +591,33 @@ Trace through all the files that would need to change.
 
 ## 9. CHECKLIST
 
-Before completing this task, verify you can answer:
+Before completing this task, verify:
 
+### Implementation
+- [ ] **Exercise 1**: Kafka service environment configured in `docker-compose.yml` (KRaft mode)
+- [ ] **Exercise 1**: `KAFKA_BOOTSTRAP_SERVERS` and `KAFKA_CLIENT_ID` wired to `app` service
+- [ ] **Exercise 1**: `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_CLIENT_ID`, and `KAFKA_GROUP_ID` wired to `mysql-service`
+- [ ] **Exercise 2**: `KafkaConfig.from_env()` reads environment variables correctly
+- [ ] **Exercise 2**: `to_producer_config()` returns correct dict
+- [ ] **Exercise 2**: `to_consumer_config()` returns correct dict with all 6 keys
+- [ ] **Exercise 3**: All 5 topic constants defined in `Topic` class
+- [ ] **Exercise 3**: `Topic.all()` returns list of all 5 topics
+- [ ] **Exercise 3**: All 19 event type constants defined in `EventType` class
+- [ ] **Exercise 4**: `KafkaProducer.__init__` creates config and Producer instance
+- [ ] **Exercise 4**: `send()` serializes JSON, encodes key, calls produce()
+- [ ] **Exercise 4**: `emit()` builds event envelope and extracts topic from event_type
+- [ ] **Exercise 4**: `get_kafka_producer()` implements singleton pattern
+- [ ] **Exercise 5**: `KafkaConsumer.__init__` creates config, Consumer, handlers dict
+- [ ] **Exercise 5**: `register_handler()` stores handlers by event_type
+- [ ] **Exercise 5**: `subscribe()` defaults to `Topic.all()`
+- [ ] **Exercise 5**: `_process_message()` decodes JSON, routes to handler
+- [ ] **Exercise 5**: `start()` implements poll loop with error handling
+- [ ] **Exercise 5**: `stop()` and `_setup_signal_handlers()` enable graceful shutdown
+
+### Understanding
 - [ ] You understand the event envelope: `{event_type, event_id, timestamp, entity_id, data}`
 - [ ] You can explain how `emit()` extracts the topic from event_type (`"order.created"` -> `"order"`)
 - [ ] You traced the full lifecycle: API -> Service -> Producer -> Kafka -> Consumer -> DAL -> MySQL
 - [ ] You understand `auto.commit.interval.ms = 5000` and its implications for at-least-once delivery
 - [ ] You can explain why `entity_id` is used as the partition key (ordering guarantee per entity)
 - [ ] You understand the upsert pattern (`ON DUPLICATE KEY UPDATE`) for idempotent processing
-- [ ] You can identify which events send full model dumps vs minimal payloads
-- [ ] You understand the variant replace pattern (DELETE + INSERT) vs standard upsert
-- [ ] You know the difference between soft delete (users, posts) and hard delete (suppliers, products)
-- [ ] You can trace how a nested MongoDB document maps to flat MySQL columns for each domain
