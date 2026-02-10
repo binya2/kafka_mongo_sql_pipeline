@@ -28,24 +28,24 @@ def main():
     db.init_tables()
 
     # Create Kafka consumer
-    # consumer = KafkaConsumer(group_id="mysql-analytics-service")
+    consumer = KafkaConsumer(group_id="mysql-analytics-service")
 
     # Register all domain consumers
-    # domain_consumers = [
-    #     UserConsumer(),
-    #     SupplierConsumer(),
-    #     ProductConsumer(),
-    #     OrderConsumer(),
-    #     PostConsumer(),
-    # ]
+    domain_consumers = [
+        UserConsumer(),
+        SupplierConsumer(),
+        ProductConsumer(),
+        OrderConsumer(),
+        PostConsumer(),
+    ]
 
-    # for dc in domain_consumers:
-    #     for event_type, handler in dc.get_handlers().items():
-    #         consumer.register_handler(event_type, handler)
-    #
+    for dc in domain_consumers:
+        for event_type, handler in dc.get_handlers().items():
+            consumer.register_handler(event_type, handler)
+
     # # Subscribe to all topics and start
-    # consumer.subscribe(Topic.all())
-    # consumer.start()
+    consumer.subscribe(Topic.all())
+    consumer.start()
 
 
 if __name__ == "__main__":

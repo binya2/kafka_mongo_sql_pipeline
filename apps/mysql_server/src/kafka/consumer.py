@@ -77,11 +77,11 @@ class KafkaConsumer:
         logger.info("Kafka Consumer stopped")
 
     def _setup_signal_handlers(self) -> None:
-        """Setup signal handlers for graceful shutdown."""
+        """Set up signal handlers for graceful shutdown."""
 
         def signal_handler(sig, frame):
             logger.info(f"Received signal {sig}, shutting down consumer...")
-            self.stop()
+            self._running = False
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-
