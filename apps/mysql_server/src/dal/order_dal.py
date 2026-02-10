@@ -22,34 +22,31 @@ class OrderDAL:
         cursor = connection.cursor()
         try:
             insert_query = """
-                INSERT INTO orders (
-                    order_id, order_number, customer_user_id, customer_display_name,
-                    customer_email, customer_phone, shipping_recipient_name,
-                    shipping_phone, shipping_street_1, shipping_street_2,
-                    shipping_city, shipping_state, shipping_zip_code,
-                    shipping_country, status, created_at, updated_at,
-                    event_id, event_timestamp
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    customer_user_id = VALUES(customer_user_id),
-                    customer_display_name = VALUES(customer_display_name),
-                    customer_email = VALUES(customer_email),
-                    customer_phone = VALUES(customer_phone),
-                    shipping_recipient_name = VALUES(shipping_recipient_name),
-                    shipping_phone = VALUES(shipping_phone),
-                    shipping_street_1 = VALUES(shipping_street_1),
-                    shipping_street_2 = VALUES(shipping_street_2),
-                    shipping_city = VALUES(shipping_city),
-                    shipping_state = VALUES(shipping_state),
-                    shipping_zip_code = VALUES(shipping_zip_code),
-                    shipping_country = VALUES(shipping_country),
-                    status = VALUES(status),
-                    created_at = VALUES(created_at),
-                    updated_at = VALUES(updated_at),
-                    event_id = VALUES(event_id),
-                    event_timestamp = VALUES(event_timestamp)
-            """
+                           INSERT INTO orders (order_id, order_number, customer_user_id, customer_display_name,
+                                               customer_email, customer_phone, shipping_recipient_name,
+                                               shipping_phone, shipping_street_1, shipping_street_2,
+                                               shipping_city, shipping_state, shipping_zip_code,
+                                               shipping_country, status, created_at, updated_at,
+                                               event_id, event_timestamp)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE customer_user_id        = VALUES(customer_user_id),
+                                                   customer_display_name   = VALUES(customer_display_name),
+                                                   customer_email          = VALUES(customer_email),
+                                                   customer_phone          = VALUES(customer_phone),
+                                                   shipping_recipient_name = VALUES(shipping_recipient_name),
+                                                   shipping_phone          = VALUES(shipping_phone),
+                                                   shipping_street_1       = VALUES(shipping_street_1),
+                                                   shipping_street_2       = VALUES(shipping_street_2),
+                                                   shipping_city           = VALUES(shipping_city),
+                                                   shipping_state          = VALUES(shipping_state),
+                                                   shipping_zip_code       = VALUES(shipping_zip_code),
+                                                   shipping_country        = VALUES(shipping_country),
+                                                   status                  = VALUES(status),
+                                                   created_at              = VALUES(created_at),
+                                                   updated_at              = VALUES(updated_at),
+                                                   event_id                = VALUES(event_id),
+                                                   event_timestamp         = VALUES(event_timestamp) \
+                           """
 
             cursor.execute(insert_query, (
                 order_id, order_number, customer_user_id, customer_display_name,
@@ -140,12 +137,12 @@ class OrderDAL:
         cursor = connection.cursor()
         try:
             update_query = """
-                UPDATE orders
-                SET status = 'cancelled',
-                    event_id = %s,
-                    event_timestamp = %s
-                WHERE order_number = %s
-            """
+                           UPDATE orders
+                           SET status          = 'cancelled',
+                               event_id        = %s,
+                               event_timestamp = %s
+                           WHERE order_number = %s \
+                           """
             cursor.execute(update_query, (event_id, event_timestamp, order_number))
             connection.commit()
             logger.info(f"Cancelled order {order_number}")
