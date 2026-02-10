@@ -37,36 +37,33 @@ class SupplierDAL:
                                                   created_at, updated_at,
                                                   event_id, event_timestamp)
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                   %s, %s, %s) ON DUPLICATE KEY
-                           UPDATE
-                               email =
-                           VALUES (email), primary_phone =
-                           VALUES (primary_phone), contact_person_name =
-                           VALUES (contact_person_name), contact_person_title =
-                           VALUES (contact_person_title), contact_person_email =
-                           VALUES (contact_person_email), contact_person_phone =
-                           VALUES (contact_person_phone), legal_name =
-                           VALUES (legal_name), dba_name =
-                           VALUES (dba_name), street_address_1 =
-                           VALUES (street_address_1), street_address_2 =
-                           VALUES
-                               (street_address_2), city =
-                           VALUES (city), state =
-                           VALUES (state), zip_code =
-                           VALUES (zip_code), country =
-                           VALUES (country), support_email =
-                           VALUES (support_email), support_phone =
-                           VALUES (support_phone), facebook_url =
-                           VALUES (facebook_url), instagram_handle =
-                           VALUES (instagram_handle), twitter_handle =
-                           VALUES (twitter_handle), linkedin_url =
-                           VALUES (linkedin_url), timezone =
-                           VALUES (timezone), created_at =
-                           VALUES (created_at), updated_at =
-                           VALUES (updated_at), event_id =
-                           VALUES (event_id), event_timestamp =
-                           VALUES (event_timestamp)
+                                   %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE email                = VALUES(email),
+                                                   primary_phone        = VALUES(primary_phone),
+                                                   contact_person_name  = VALUES(contact_person_name),
+                                                   contact_person_title = VALUES(contact_person_title),
+                                                   contact_person_email = VALUES(contact_person_email),
+                                                   contact_person_phone = VALUES(contact_person_phone),
+                                                   legal_name           = VALUES(legal_name),
+                                                   dba_name             = VALUES(dba_name),
+                                                   street_address_1     = VALUES(street_address_1),
+                                                   street_address_2     = VALUES(street_address_2),
+                                                   city                 = VALUES(city),
+                                                   state                = VALUES(state),
+                                                   zip_code             = VALUES(zip_code),
+                                                   country              = VALUES(country),
+                                                   support_email        = VALUES(support_email),
+                                                   support_phone        = VALUES(support_phone),
+                                                   facebook_url         = VALUES(facebook_url),
+                                                   instagram_handle     = VALUES(instagram_handle),
+                                                   twitter_handle       = VALUES(twitter_handle),
+                                                   linkedin_url         = VALUES(linkedin_url),
+                                                   timezone             = VALUES(timezone),
+                                                   updated_at           = VALUES(updated_at),
+                                                   event_id             = VALUES(event_id),
+                                                   event_timestamp      = VALUES(event_timestamp)
                            """
+
             value = (
                 supplier_id, email, primary_phone,
                 contact_person_name, contact_person_title,
@@ -80,6 +77,7 @@ class SupplierDAL:
                 created_at, updated_at,
                 event_id, event_timestamp
             )
+
             cursor.execute(insert_query, value)
             connection.commit()
             logger.info(f"Inserted/Updated supplier with ID {supplier_id}")

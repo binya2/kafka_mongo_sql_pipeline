@@ -20,22 +20,22 @@ class UserDAL:
                            INSERT INTO users (user_id, email, phone, display_name, avatar, bio,
                                               version, deleted_at, created_at, updated_at,
                                               event_id, event_timestamp)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON DUPLICATE KEY
-                           UPDATE email =
-                           VALUES (email), phone =
-                           VALUES (phone), display_name =
-                           VALUES (display_name), avatar =
-                           VALUES (avatar), bio =
-                           VALUES (bio), version =
-                           VALUES (version), deleted_at =
-                           VALUES (deleted_at), created_at =
-                           VALUES (created_at), updated_at =
-                           VALUES (updated_at), event_id =
-                           VALUES (event_id), event_timestamp =
-                           VALUES (event_timestamp)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE email           = VALUES(email),
+                                                   phone           = VALUES(phone),
+                                                   display_name    = VALUES(display_name),
+                                                   avatar          = VALUES(avatar),
+                                                   bio             = VALUES(bio),
+                                                   version         = VALUES(version),
+                                                   deleted_at      = VALUES(deleted_at),
+                                                   updated_at      = VALUES(updated_at),
+                                                   event_id        = VALUES(event_id),
+                                                   event_timestamp = VALUES(event_timestamp)
                            """
+
             values = (user_id, email, phone, display_name, avatar, bio, version, deleted_at, created_at, updated_at,
                       event_id, event_timestamp)
+
             cursor.execute(insert_query, values)
             connection.commit()
             logger.info(f"Inserted/Updated user {display_name} with ID {user_id}")
