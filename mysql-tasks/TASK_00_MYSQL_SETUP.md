@@ -7,14 +7,14 @@ You are building the **MySQL Analytics Service** - a Kafka consumer that subscri
 This track can be completed **independently of (or in parallel with) the MongoDB tasks**. The MongoDB backend, Kafka broker, and all shared models are already in place. As events flow through Kafka - whether from seed scripts, the REST API, or completed MongoDB services - your MySQL consumer will catch them and store the data.
 
 The codebase is **already scaffolded** for you:
-- **Connection pool** (complete) - `src/db/connection.py` manages MySQL connections
+- **Connection pool** (EMPTY SHELL) - `src/db/connection.py` has class structure only
 - **Kafka consumer framework** (complete) - `src/kafka/consumer.py` handles message polling and routing
 - **Bootstrap** (complete) - `main.py` wires everything together
 - **Tables** (EMPTY) - `src/db/tables.py` has an empty `TABLE_DEFINITIONS` list
 - **DALs** (EMPTY SHELLS) - `src/dal/*_dal.py` files have class definitions only
 - **Consumers** (EMPTY SHELLS) - `src/consumers/*_consumer.py` files have class definitions only
 
-You will implement **three layers per domain**: DDL (CREATE TABLE), DAL (raw SQL), and Consumer (event handlers).
+Your **first task** is to implement the connection pool in `connection.py`. Then you implement **three layers per domain**: DDL (CREATE TABLE), DAL (raw SQL), and Consumer (event handlers).
 
 ```
 Kafka Event (JSON)
@@ -28,7 +28,7 @@ Kafka Event (JSON)
    YOU WRITE THIS            YOU WRITE THIS           YOU WRITE THIS
 ```
 
-> **Rule:** You never touch `connection.py`, `consumer.py`, or `main.py`. You ONLY write CREATE TABLE statements, DAL methods, and consumer event handlers.
+> **Rule:** You never touch `consumer.py` or `main.py`. You implement `connection.py` once (TASK_00), then write CREATE TABLE statements, DAL methods, and consumer event handlers.
 
 ---
 

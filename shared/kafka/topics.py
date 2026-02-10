@@ -16,5 +16,4 @@ class Topic:
 class EventType:
     """Event types (topic.action)."""
     # TODO: Define all event type constants in format "topic.action"
-    # e.g., USER_CREATED = "user.created"
     pass
