@@ -7,14 +7,14 @@ You are building the **MySQL Analytics Service** - a Kafka consumer that subscri
 This track can be completed **independently of (or in parallel with) the MongoDB tasks**. The MongoDB backend, Kafka broker, and all shared models are already in place. As events flow through Kafka - whether from seed scripts, the REST API, or completed MongoDB services - your MySQL consumer will catch them and store the data.
 
 The codebase is **already scaffolded** for you:
-- **Connection pool** (complete) - `src/db/connection.py` manages MySQL connections
+- **Connection pool** (EMPTY SHELL) - `src/db/connection.py` has class structure only
 - **Kafka consumer framework** (complete) - `src/kafka/consumer.py` handles message polling and routing
 - **Bootstrap** (complete) - `main.py` wires everything together
 - **Tables** (EMPTY) - `src/db/tables.py` has an empty `TABLE_DEFINITIONS` list
 - **DALs** (EMPTY SHELLS) - `src/dal/*_dal.py` files have class definitions only
 - **Consumers** (EMPTY SHELLS) - `src/consumers/*_consumer.py` files have class definitions only
 
-You will implement **three layers per domain**: DDL (CREATE TABLE), DAL (raw SQL), and Consumer (event handlers).
+Your **first task** is to implement the connection pool in `connection.py`. Then you implement **three layers per domain**: DDL (CREATE TABLE), DAL (raw SQL), and Consumer (event handlers).
 
 ```
 Kafka Event (JSON)
@@ -28,7 +28,7 @@ Kafka Event (JSON)
    YOU WRITE THIS            YOU WRITE THIS           YOU WRITE THIS
 ```
 
-> **Rule:** You never touch `connection.py`, `consumer.py`, or `main.py`. You ONLY write CREATE TABLE statements, DAL methods, and consumer event handlers.
+> **Rule:** You never touch `consumer.py` or `main.py`. You implement `connection.py` once (TASK_00), then write CREATE TABLE statements, DAL methods, and consumer event handlers.
 
 ---
 
@@ -218,7 +218,7 @@ def handle_entity_created(self, event: dict):
 | File | Lines | What It Does |
 |------|-------|-------------|
 | `apps/mysql_server/main.py` | 52 | Bootstrap: connects DB, creates consumer, registers handlers, starts polling |
-| `apps/mysql_server/src/db/connection.py` | 54 | Connection pool: `get_database()` singleton, `get_connection()`, `init_tables()` |
+| `apps/mysql_server/src/db/connection.py` | 38 | Connection pool (stubbed): you implement `connect()`, `init_tables()`, `get_connection()` |
 | `apps/mysql_server/src/kafka/consumer.py` | 104 | Kafka framework: poll loop, JSON parsing, handler dispatch, signal handling |
 | `shared/kafka/topics.py` | 55 | Event catalog: 5 Topics + 19 EventTypes |
 
@@ -240,11 +240,10 @@ This is 52 lines. Read every line. It shows you:
 apps/mysql_server/src/db/connection.py
 ```
 
-This shows you:
-- The `Database` class with pool management
-- `get_connection()` returns a connection from the pool
-- `init_tables()` iterates `TABLE_DEFINITIONS` and executes each DDL statement
-- `get_database()` is the singleton accessor your DAL methods call
+This file is **stubbed out** - you will implement it. It has:
+- The `Database` class with `self._pool = None`
+- Three empty methods: `connect()`, `init_tables()`, `get_connection()`
+- `get_database()` singleton accessor (already complete)
 
 ### Read `consumer.py` Third
 
@@ -546,7 +545,47 @@ docker compose restart mysql-service
 
 ---
 
-## 11. CHECKLIST
+## 11. EXERCISE: IMPLEMENT THE CONNECTION POOL
+
+**File:** `apps/mysql_server/src/db/connection.py`
+
+Open the file. You'll see three stubbed methods. Implement them:
+
+### 11.1 `connect(self)`
+
+Create a MySQL connection pool using `mysql.connector.pooling.MySQLConnectionPool`.
+
+- Read connection parameters from environment variables (`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`) with sensible defaults
+- Set `pool_size=5` and `autocommit=True`
+- Store the pool in `self._pool`
+- Log that the pool was created
+
+### 11.2 `init_tables(self)`
+
+Execute all DDL statements from `TABLE_DEFINITIONS` to create the analytics tables.
+
+- Import `TABLE_DEFINITIONS` from `src.db.tables` (local import to avoid circular imports)
+- Get a connection from the pool
+- Iterate all DDL statements and execute each one
+- Always close the connection in a `finally` block (returns it to the pool)
+
+### 11.3 `get_connection(self)`
+
+Return a connection from the pool.
+
+### Verification
+
+After implementing, restart the mysql-service:
+
+```bash
+docker compose restart mysql-service
+docker compose logs mysql-service | grep "connection pool created"
+# Expected: MySQL connection pool created
+```
+
+---
+
+## 12. CHECKLIST
 
 Before starting TASK_01_MYSQL_USER, verify:
 

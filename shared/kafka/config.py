@@ -13,23 +13,16 @@ class KafkaConfig(BaseModel):
 
     @classmethod
     def from_env(cls, client_id: str = "service") -> "KafkaConfig":
-        return cls(
-            bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
-            client_id=os.getenv("KAFKA_CLIENT_ID", client_id),
-        )
+        """Create config from environment variables."""
+        # TODO: Read KAFKA_BOOTSTRAP_SERVERS and KAFKA_CLIENT_ID from environment
+        pass
 
     def to_producer_config(self) -> dict:
-        return {
-            "bootstrap.servers": self.bootstrap_servers,
-            "client.id": self.client_id,
-        }
+        """Return config dict for confluent_kafka.Producer."""
+        # TODO: Return producer configuration dictionary
+        pass
 
     def to_consumer_config(self, group_id: str) -> dict:
-        return {
-            "bootstrap.servers": self.bootstrap_servers,
-            "group.id": group_id,
-            "client.id": self.client_id,
-            "auto.offset.reset": os.getenv("KAFKA_AUTO_OFFSET_RESET", "earliest"),
-            "enable.auto.commit": True,
-            "auto.commit.interval.ms": 5000,
-        }
+        """Return config dict for confluent_kafka.Consumer."""
+        # TODO: Return consumer configuration dictionary
+        pass

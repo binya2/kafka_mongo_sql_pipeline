@@ -25,16 +25,13 @@ class KafkaProducer:
     """
 
     def __init__(self, config: Optional[KafkaConfig] = None):
-        self._config = config or KafkaConfig.from_env()
-        self._producer = Producer(self._config.to_producer_config())
-        logger.info(f"Kafka producer initialized: {self._config.bootstrap_servers}")
+        # TODO: Initialize config (use from_env if none provided) and create Producer
+        pass
 
     def _delivery_callback(self, err, msg) -> None:
         """Callback for message delivery reports."""
-        if err:
-            logger.error(f"Delivery failed: {err}")
-        else:
-            logger.debug(f"Delivered to {msg.topic()}[{msg.partition()}]")
+        # TODO: Log error on failure, log debug on success
+        pass
 
     def send(
         self,
@@ -50,13 +47,8 @@ class KafkaProducer:
             value: Message payload (will be JSON serialized)
             key: Optional partition key
         """
-        self._producer.produce(
-            topic=topic,
-            key=key.encode("utf-8") if key else None,
-            value=json.dumps(value).encode("utf-8"),
-            callback=self._delivery_callback,
-        )
-        self._producer.poll(0)
+        # TODO: Serialize value to JSON, encode key to utf-8, call producer.produce()
+        pass
 
     def flush(self, timeout: float = 10.0) -> int:
         """
@@ -68,7 +60,8 @@ class KafkaProducer:
         Returns:
             Number of messages still in queue (0 if all delivered)
         """
-        return self._producer.flush(timeout)
+        # TODO: Flush the producer
+        pass
 
     def emit(
         self,
@@ -84,15 +77,8 @@ class KafkaProducer:
             entity_id: Primary entity ID (used as partition key)
             data: Event payload data
         """
-        topic = event_type.split(".")[0]
-        event = {
-            "event_type": event_type,
-            "event_id": str(uuid.uuid4()),
-            "timestamp": utc_now().isoformat(),
-            "entity_id": entity_id,
-            "data": data,
-        }
-        self.send(topic=topic, key=entity_id, value=event)
+        # TODO: Build event envelope and send to the correct topic
+        pass
 
 
 # Singleton instance
@@ -101,7 +87,5 @@ kafka_producer: Optional[KafkaProducer] = None
 
 def get_kafka_producer() -> KafkaProducer:
     """Get or create the Kafka producer singleton."""
-    global kafka_producer
-    if kafka_producer is None:
-        kafka_producer = KafkaProducer()
-    return kafka_producer
+    # TODO: Implement singleton pattern
+    pass

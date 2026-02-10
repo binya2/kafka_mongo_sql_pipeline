@@ -15,33 +15,16 @@ class Database:
         self._pool = None
 
     def connect(self):
-        self._pool = pooling.MySQLConnectionPool(
-            pool_name="analytics_pool",
-            pool_size=5,
-            host=os.getenv("MYSQL_HOST", "localhost"),
-            port=int(os.getenv("MYSQL_PORT", "3306")),
-            user=os.getenv("MYSQL_USER", "analytics"),
-            password=os.getenv("MYSQL_PASSWORD", "analytics123"),
-            database=os.getenv("MYSQL_DATABASE", "analytics"),
-            autocommit=True,
-        )
-        logger.info("MySQL connection pool created")
+        # TODO: Implement (TASK_00)
+        pass
 
     def init_tables(self):
-        from src.db.tables import TABLE_DEFINITIONS
-
-        conn = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            for ddl in TABLE_DEFINITIONS:
-                cursor.execute(ddl)
-            cursor.close()
-            logger.info("All tables initialized")
-        finally:
-            conn.close()
+        # TODO: Implement (TASK_00)
+        pass
 
     def get_connection(self):
-        return self._pool.get_connection()
+        # TODO: Implement (TASK_00)
+        pass
 
 
 _db = None

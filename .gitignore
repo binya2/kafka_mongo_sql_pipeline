@@ -23,12 +23,4 @@ env/
 .env
 .env.local
 
-# OS
-.DS_Store
-Thumbs.db
 
-# Temporary files
-*.tmp
-*.bak
-*.swp
-*~
