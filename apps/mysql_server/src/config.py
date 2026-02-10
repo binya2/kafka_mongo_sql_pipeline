@@ -1,3 +1,5 @@
+import os
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -14,3 +16,7 @@ class MySqlConfig(BaseSettings):
 
 
 mysql_config = MySqlConfig()
+
+
+
+
